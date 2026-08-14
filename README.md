@@ -58,7 +58,12 @@ callbell capabilities
 ## Configuration
 
 Callbell CLI reads one YAML file describing services, credentials, and the connections that bind them.
-See [docs/configuration.md](docs/configuration.md) and the annotated
+The file never holds a secret: a credential either names environment variables or points at the credential
+store of your platform, which `callbell credential set` fills. A stored credential is resolved through one
+cascade, environment variable before credential store before an explicitly enabled plaintext fallback, and
+callbell always reports which of them delivered. A credential that names its environment variables is
+resolved from those variables alone, so a CI run cannot silently pick up a local identity instead. See
+[docs/configuration.md](docs/configuration.md) and the annotated
 [examples/config.yaml](examples/config.yaml).
 
 ## Providers

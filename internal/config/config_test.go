@@ -120,9 +120,16 @@ func TestDecodeRejects(t *testing.T) {
 			wantIn:  "must contain a host",
 		},
 		{
-			name:    "wrong credential type",
+			name:    "unknown credential type",
+			replace: [2]string{"type: env", "type: vault"},
+			wantIn:  `type must be one of env, keyring, got "vault"`,
+		},
+		{
+			// A keyring credential that carries values is the accident this type exists to prevent:
+			// whatever stands there is most likely the secret itself.
+			name:    "keyring credential with values",
 			replace: [2]string{"type: env", "type: keyring"},
-			wantIn:  `type must be "env", got "keyring"`,
+			wantIn:  "credentials.reader.values: must be absent for a keyring credential",
 		},
 		{
 			name:    "invalid environment variable name",
@@ -292,8 +299,8 @@ func TestResolve(t *testing.T) {
 		if got.Name != "wiki-audit" || got.Credential != "wiki-auditor" {
 			t.Errorf("resolved %+v, want the wiki-audit connection", got)
 		}
-		if got.EnvNames["token-id"] != "CALLBELL_WIKI_AUDITOR_TOKEN_ID" {
-			t.Errorf("env names = %v, want the auditor variables", got.EnvNames)
+		if got.Secrets.Type != CredentialTypeEnv || got.Secrets.Values["token-id"] != "CALLBELL_WIKI_AUDITOR_TOKEN_ID" {
+			t.Errorf("secrets = %+v, want the auditor variables", got.Secrets)
 		}
 	})
 
@@ -360,7 +367,7 @@ func TestNoSecretValueLeaks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve() = %v", err)
 	}
-	for role, name := range resolved.EnvNames {
+	for role, name := range resolved.Secrets.Values {
 		if strings.Contains(name, canary) {
 			t.Errorf("resolved role %q carries the secret value instead of the variable name", role)
 		}

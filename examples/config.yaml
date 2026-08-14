@@ -1,10 +1,10 @@
 # Example callbell configuration.
 #
 # Copy this file to ~/.callbell/cli/config.yaml and replace the placeholders. It contains no real
-# endpoints and no secrets: a credential names the environment variables that carry the secrets, never
-# their values.
+# endpoints and no secrets: a credential only says where its secrets come from, never what they are.
 #
-# Check your edits with: callbell config validate
+# Check your edits with:       callbell config validate
+# See where secrets come from: callbell config validate --secrets
 
 version: 1
 
@@ -21,14 +21,22 @@ services:
     options:
       page_size: "50"
 
-# A credential only points at environment variables. BookStack needs the roles token-id and token-secret.
+# A credential says where secrets come from. BookStack needs the roles token-id and token-secret.
 credentials:
+  # type: keyring keeps the secrets in the credential store of the platform, so nothing has to be
+  # exported and nothing lands in this file. Fill it with:
+  #
+  #     printf %s "$TOKEN_ID" | callbell credential set wiki-reader token-id
+  #     printf %s "$TOKEN_SECRET" | callbell credential set wiki-reader token-secret
+  #
+  # CALLBELL_WIKI_READER_TOKEN_ID and CALLBELL_WIKI_READER_TOKEN_SECRET still override the store when
+  # they are set; the derived name is always CALLBELL_<CREDENTIAL>_<ROLE>.
   wiki-reader:
-    type: env
-    values:
-      token-id: CALLBELL_WIKI_READER_TOKEN_ID
-      token-secret: CALLBELL_WIKI_READER_TOKEN_SECRET
+    type: keyring
 
+  # type: env names the variables instead, which is the way for CI and for headless machines. Such a
+  # credential is resolved from those variables alone: no store and no file stands in for one that is
+  # unset, so a missing secret stays a visible failure.
   wiki-auditor:
     type: env
     values:

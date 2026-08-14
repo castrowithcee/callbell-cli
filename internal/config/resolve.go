@@ -2,8 +2,11 @@ package config
 
 import "fmt"
 
-// Resolved is the fully dereferenced access context of one connection. EnvNames maps a provider-defined
-// secret role to the environment variable that carries the secret; the value itself is never resolved here.
+// Resolved is the fully dereferenced access context of one connection.
+//
+// Credential is the name of the credential entry, Secrets the entry itself: its type and, for type env,
+// the variable names. Both are needed to resolve a secret, and neither is a secret. Nothing here reads a
+// value; that happens later, in package secret, and only for the role a provider actually needs.
 type Resolved struct {
 	Name       string
 	Provider   string
@@ -12,7 +15,7 @@ type Resolved struct {
 	Target     string
 	Service    string
 	Credential string
-	EnvNames   map[string]string
+	Secrets    Credential
 }
 
 // SelectionError reports that no single connection could be determined for a domain. It is a usage
@@ -56,6 +59,6 @@ func (c *Config) Resolve(name, domain string) (*Resolved, error) {
 		Target:     conn.Target,
 		Service:    conn.Service,
 		Credential: conn.Credential,
-		EnvNames:   cred.Values,
+		Secrets:    cred,
 	}, nil
 }

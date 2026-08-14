@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/castrowithcee/callbell-cli/internal/capability"
+	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // version is overridden at build time with
@@ -38,6 +41,30 @@ type Options struct {
 	Format output.Format
 	// Redactor removes secret values from anything the process prints.
 	Redactor *redact.Redactor
+	// Secrets resolves credentials through the cascade. It is built on first use, from the directory the
+	// configuration was resolved from; a test sets it beforehand so no run touches the credential store
+	// of the machine it runs on.
+	Secrets *secret.Resolver
+}
+
+// resolver returns the credential resolver of this run, building it once.
+func (o *Options) resolver() (*secret.Resolver, error) {
+	if o.Secrets != nil {
+		return o.Secrets, nil
+	}
+	path, err := config.Path(o.Config)
+	if err != nil {
+		return nil, err
+	}
+	// The plaintext fallback lives beside the configuration, so it follows the same resolution: an
+	// explicit --config, CALLBELL_CONFIG, CALLBELL_CLI_HOME, or the default directory.
+	resolver, err := secret.New(filepath.Dir(path), o.Redactor)
+	if err != nil {
+		// An unusable store selector is a mistake in the invocation, not a runtime failure.
+		return nil, &UsageError{err}
+	}
+	o.Secrets = resolver
+	return o.Secrets, nil
 }
 
 // UsageError marks a usage or validation problem, which maps to exit code 2. Every other error is a
@@ -124,6 +151,7 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 
 	cmd.AddCommand(
 		newConfigCommand(opts),
+		newCredentialCommand(opts),
 		newCapabilitiesCommand(opts, reg),
 		newDescribeCommand(opts, reg),
 		newKnowledgeCommand(opts),
@@ -159,4 +187,16 @@ func emit(c *cobra.Command, opts *Options, result output.Result) error {
 		return classifyUserError(err)
 	}
 	return output.Encode(c.OutOrStdout(), opts.Format, output.Limit(projected, opts.Limit))
+}
+
+// emitComplete is emit for a result that must never be cut short. --limit caps how many records a listing
+// returns, which is a sensible default for data from a provider and a wrong one for a report about the
+// user's own configuration: a check that silently drops rows reads as an all-clear for the rows it never
+// showed. Projection and format still apply, so the output contract is unchanged.
+func emitComplete(c *cobra.Command, opts *Options, result output.Result) error {
+	projected, err := output.Project(result, opts.Fields)
+	if err != nil {
+		return classifyUserError(err)
+	}
+	return output.Encode(c.OutOrStdout(), opts.Format, projected)
 }

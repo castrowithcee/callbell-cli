@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // Canary values stand in for real tokens. No part of the acceptance run needs a real secret or a real
@@ -174,6 +176,9 @@ defaults:
 			"HOME=" + dir,
 			"PATH=" + os.Getenv("PATH"),
 			"CALLBELL_CONFIG=" + configPath,
+			// The acceptance run must not touch the credential store of the machine it runs on, and
+			// must not depend on whether that machine has one.
+			secret.StoreSelector + "=none",
 			"E2E_PRIMARY_ID=" + canaryPrimaryID,
 			"E2E_PRIMARY_SECRET=" + canaryPrimarySecret,
 			"E2E_ARCHIVE_ID=" + canaryArchiveID,
@@ -341,7 +346,10 @@ defaults:
 
 	t.Run("an unset variable is reported by its configuration key", func(t *testing.T) {
 		bare := *c
-		bare.env = []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH"), "CALLBELL_CONFIG=" + configPath}
+		bare.env = []string{
+			"HOME=" + dir, "PATH=" + os.Getenv("PATH"), "CALLBELL_CONFIG=" + configPath,
+			secret.StoreSelector + "=none",
+		}
 
 		code, stdout, stderr := bare.run(t, "knowledge", "pages", "list")
 
@@ -465,6 +473,7 @@ defaults:
 					"HOME=" + dir,
 					"PATH=" + os.Getenv("PATH"),
 					"CALLBELL_CONFIG=" + configPath,
+					secret.StoreSelector + "=none",
 				},
 				seen: &seen,
 			}
@@ -502,4 +511,368 @@ defaults:
 			}
 		})
 	}
+}
+
+// TestCredentialStoreEndToEnd drives the credential cascade through the built binary: a keyring
+// credential that holds nothing in the configuration, the refusal to fall back to a plaintext file
+// without being told to, the named way out, and an environment variable overriding what is stored.
+//
+// The machine's own credential store stays untouched: the runs disable it, which is also what a CI job
+// and a container do.
+func TestCredentialStoreEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the acceptance run builds the binary")
+	}
+
+	const (
+		storedID     = "canary-stored-id-5e21c7"
+		storedSecret = "canary-stored-secret-b83f04"
+		overrideID   = "canary-override-id-71ad9c"
+	)
+
+	dir := t.TempDir()
+	bin := buildBinary(t, dir)
+	server := mock(t, "Token "+storedID+":"+storedSecret, []map[string]any{page(1, "Vault Runbook")}, "<p>x</p>")
+
+	configPath := filepath.Join(dir, "config.yaml")
+	config := fmt.Sprintf(`version: 1
+services:
+  wiki:
+    provider: bookstack
+    base_url: %s
+credentials:
+  vault-reader:
+    type: keyring
+connections:
+  wiki:
+    service: wiki
+    credential: vault-reader
+defaults:
+  connections:
+    knowledge: wiki
+`, server.URL)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("writing the configuration: %v", err)
+	}
+
+	var seen strings.Builder
+	baseEnv := []string{
+		"HOME=" + dir,
+		"PATH=" + os.Getenv("PATH"),
+		"CALLBELL_CONFIG=" + configPath,
+		secret.StoreSelector + "=none",
+	}
+	c := &runner{bin: bin, env: baseEnv, seen: &seen}
+	fallback := filepath.Join(dir, secret.FileName)
+
+	// pipe runs the binary with a secret on standard input, the way the command documents.
+	pipe := func(t *testing.T, in string, args ...string) (int, string, string) {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Env = c.env
+		cmd.Stdin = strings.NewReader(in)
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		code := 0
+		if exit, ok := err.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else if err != nil {
+			t.Fatalf("running %v: %v", args, err)
+		}
+		seen.WriteString(stdout.String())
+		seen.WriteString(stderr.String())
+		return code, stdout.String(), stderr.String()
+	}
+
+	t.Run("the configuration validates without holding a secret", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "config", "validate")
+
+		if code != 0 || stdout != "" || stderr != "" {
+			t.Errorf("exit %d, stdout %q, stderr %q; want a silent success", code, stdout, stderr)
+		}
+	})
+
+	t.Run("without a store and without the switch nothing is written", func(t *testing.T) {
+		code, stdout, stderr := pipe(t, storedID, "credential", "set", "vault-reader", "token-id")
+
+		if code != 2 {
+			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, "--plaintext") {
+			t.Errorf("stderr = %q, want the named way out", stderr)
+		}
+		if _, err := os.Stat(fallback); !os.IsNotExist(err) {
+			t.Fatalf("the plaintext fallback exists without the switch: %v", err)
+		}
+	})
+
+	t.Run("the named fallback carries the run", func(t *testing.T) {
+		for role, value := range map[string]string{"token-id": storedID, "token-secret": storedSecret} {
+			if code, _, stderr := pipe(t, value, "credential", "set", "vault-reader", role, "--plaintext"); code != 0 {
+				t.Fatalf("storing %s: exit %d (stderr %q)", role, code, stderr)
+			}
+		}
+		info, err := os.Stat(fallback)
+		if err != nil {
+			t.Fatalf("the fallback was not written: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+		}
+
+		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--agent")
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		if !strings.Contains(stdout, "Vault Runbook") {
+			t.Errorf("stdout = %q, want the page", stdout)
+		}
+	})
+
+	t.Run("a fallback others can read is refused", func(t *testing.T) {
+		if err := os.Chmod(fallback, 0o644); err != nil {
+			t.Fatalf("Chmod() = %v", err)
+		}
+		defer func() {
+			if err := os.Chmod(fallback, 0o600); err != nil {
+				t.Fatalf("Chmod() = %v", err)
+			}
+		}()
+
+		code, stdout, stderr := c.run(t, "knowledge", "pages", "list")
+
+		if code != 2 {
+			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, "plaintext file (readable by others)") {
+			t.Errorf("stderr = %q, want the widened mode reported", stderr)
+		}
+		if !strings.Contains(stderr, "chmod 600 "+fallback) {
+			t.Errorf("stderr = %q, want the command that fixes it", stderr)
+		}
+		// One state, one code: reading, writing and deleting all report the file.
+		if !strings.HasPrefix(stderr, "callbell: config-invalid: ") {
+			t.Errorf("stderr = %q, want the config-invalid code", stderr)
+		}
+	})
+
+	t.Run("a delete that cannot clear the file says so", func(t *testing.T) {
+		if err := os.Chmod(fallback, 0o644); err != nil {
+			t.Fatalf("Chmod() = %v", err)
+		}
+		defer func() {
+			if err := os.Chmod(fallback, 0o600); err != nil {
+				t.Fatalf("Chmod() = %v", err)
+			}
+		}()
+
+		code, stdout, stderr := c.run(t, "credential", "delete", "vault-reader", "token-id")
+
+		if code != 2 {
+			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.HasPrefix(stderr, "callbell: config-invalid: ") {
+			t.Errorf("stderr = %q, want the same code the file gets when it is read", stderr)
+		}
+		for _, want := range []string{"may still be stored in the plaintext file", "chmod 600 " + fallback} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr, want)
+			}
+		}
+		// The store the user switched off is not what this is about, and it is not what is reported.
+		if strings.Contains(stderr, "switched off") {
+			t.Errorf("stderr = %q, want the real blocker rather than the store", stderr)
+		}
+	})
+
+	t.Run("the source of every secret is visible", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "config", "validate", "--secrets", "--agent")
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		want := "connection|credential|role|source|checked\n" +
+			"wiki|vault-reader|token-id|plaintext file|environment variable (not set), credential store (switched off)\n" +
+			"wiki|vault-reader|token-secret|plaintext file|environment variable (not set), credential store (switched off)\n"
+		if stdout != want {
+			t.Errorf("stdout = %q,\nwant %q", stdout, want)
+		}
+	})
+
+	t.Run("an environment variable overrides the stored secret and says so", func(t *testing.T) {
+		shadowed := *c
+		shadowed.env = append(append([]string{}, baseEnv...), "CALLBELL_VAULT_READER_TOKEN_ID="+overrideID)
+
+		code, stdout, stderr := shadowed.run(t, "config", "validate", "--secrets", "--agent", "--fields", "role,source")
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		want := "role|source\ntoken-id|environment variable\ntoken-secret|plaintext file\n"
+		if stdout != want {
+			t.Errorf("stdout = %q, want %q", stdout, want)
+		}
+
+		// The override really reaches the provider: the mock rejects the wrong token.
+		code, _, stderr = shadowed.run(t, "knowledge", "pages", "list", "--agent")
+		if code != 1 || !strings.HasPrefix(stderr, "callbell: auth: ") {
+			t.Errorf("exit %d, stderr %q; want an auth failure", code, stderr)
+		}
+	})
+
+	t.Run("deleting the last entry removes the fallback", func(t *testing.T) {
+		for _, role := range []string{"token-id", "token-secret"} {
+			if code, _, stderr := c.run(t, "credential", "delete", "vault-reader", role); code != 0 {
+				t.Fatalf("deleting %s: exit %d (stderr %q)", role, code, stderr)
+			}
+		}
+		if _, err := os.Stat(fallback); !os.IsNotExist(err) {
+			t.Errorf("the emptied fallback was kept: %v", err)
+		}
+	})
+
+	t.Run("no canary reached any stream", func(t *testing.T) {
+		for _, canary := range []string{storedID, storedSecret, overrideID} {
+			if strings.Contains(seen.String(), canary) {
+				t.Errorf("the canary %q reached the output", canary)
+			}
+		}
+		// The fallback file is the one place a secret may live, and it is gone by now anyway.
+		for path, data := range filesUnder(t, dir) {
+			for _, canary := range []string{storedID, storedSecret, overrideID} {
+				if strings.Contains(data, canary) {
+					t.Errorf("the canary %q reached the file %s", canary, path)
+				}
+			}
+		}
+	})
+}
+
+// TestEnvCredentialDoesNotFallThrough nails down that a credential of type env is resolved from the
+// variable it names and from nothing else. The setup is the attack it prevents: the variables are unset,
+// the way a CI run looks that forgot its secret, while a switched-on plaintext fallback beside the
+// configuration holds a working token under the same credential name. The run must fail rather than
+// authenticate with the identity that happens to lie next to the configuration.
+func TestEnvCredentialDoesNotFallThrough(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the acceptance run builds the binary")
+	}
+
+	const (
+		fileID     = "canary-file-id-1d97a2"
+		fileSecret = "canary-file-secret-6b04ce"
+	)
+
+	dir := t.TempDir()
+	bin := buildBinary(t, dir)
+	server := mock(t, "Token "+fileID+":"+fileSecret, []map[string]any{page(1, "Fallback Runbook")}, "<p>x</p>")
+
+	configPath := filepath.Join(dir, "config.yaml")
+	template := `version: 1
+services:
+  wiki:
+    provider: bookstack
+    base_url: %s
+credentials:
+  reader:
+    type: %s
+connections:
+  wiki:
+    service: wiki
+    credential: reader
+defaults:
+  connections:
+    knowledge: wiki
+`
+	envConfig := fmt.Sprintf(template, server.URL, "env\n    values:\n      token-id: E2E_UNSET_ID\n      token-secret: E2E_UNSET_SECRET")
+	keyringConfig := fmt.Sprintf(template, server.URL, "keyring")
+	if err := os.WriteFile(configPath, []byte(envConfig), 0o600); err != nil {
+		t.Fatalf("writing the configuration: %v", err)
+	}
+
+	// The fallback is the one a developer would have on the same machine, complete and switched on.
+	fallback := fmt.Sprintf("version: 1\nallow_plaintext: true\ncredentials:\n  reader:\n    token-id: %s\n    token-secret: %s\n",
+		fileID, fileSecret)
+	if err := os.WriteFile(filepath.Join(dir, secret.FileName), []byte(fallback), 0o600); err != nil {
+		t.Fatalf("writing the fallback: %v", err)
+	}
+
+	var seen strings.Builder
+	c := &runner{
+		bin: bin,
+		env: []string{
+			"HOME=" + dir,
+			"PATH=" + os.Getenv("PATH"),
+			"CALLBELL_CONFIG=" + configPath,
+			secret.StoreSelector + "=none",
+		},
+		seen: &seen,
+	}
+
+	t.Run("the run fails instead of using the file", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "knowledge", "pages", "list")
+
+		if code != 2 {
+			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, "missing-secret") ||
+			!strings.Contains(stderr, "credentials.reader.values.token-id") {
+			t.Errorf("stderr = %q, want the missing secret reported", stderr)
+		}
+		if strings.Contains(stderr, string(secret.SourcePlaintext)) {
+			t.Errorf("stderr = %q, want no stage beyond the variable", stderr)
+		}
+	})
+
+	t.Run("the report names the environment variable as the only stage", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "config", "validate", "--secrets", "--agent")
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		want := "connection|credential|role|source|checked\n" +
+			"wiki|reader|token-id|missing|environment variable (not set)\n" +
+			"wiki|reader|token-secret|missing|environment variable (not set)\n"
+		if stdout != want {
+			t.Errorf("stdout = %q,\nwant %q", stdout, want)
+		}
+	})
+
+	t.Run("the same file works for a keyring credential", func(t *testing.T) {
+		if err := os.WriteFile(configPath, []byte(keyringConfig), 0o600); err != nil {
+			t.Fatalf("writing the configuration: %v", err)
+		}
+
+		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--agent")
+
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		if !strings.Contains(stdout, "Fallback Runbook") {
+			t.Errorf("stdout = %q, want the page", stdout)
+		}
+	})
+
+	t.Run("no canary reached any stream", func(t *testing.T) {
+		for _, canary := range []string{fileID, fileSecret} {
+			if strings.Contains(seen.String(), canary) {
+				t.Errorf("the canary %q reached the output", canary)
+			}
+		}
+	})
 }

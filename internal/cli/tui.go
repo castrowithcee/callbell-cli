@@ -51,7 +51,11 @@ func connectionTester(store *config.Store, opts *Options) tui.Tester {
 			return "", fmt.Errorf("connection %q uses provider %q, which cannot be tested yet",
 				connection, resolved.Provider)
 		}
-		client, err := bookstack.Open(resolved, opts.Redactor)
+		secrets, err := opts.resolver()
+		if err != nil {
+			return "", err
+		}
+		client, err := bookstack.Open(resolved, secrets, opts.Redactor)
 		if err != nil {
 			return "", err
 		}

@@ -53,6 +53,13 @@ func SecretRoles() []string {
 // Providers returns the provider names a service may use, sorted.
 func Providers() []string { return sortedKeys(providerSecretRoles) }
 
+// ProviderSecretRoles returns the secret roles one provider requires, in the order it declares them. An
+// unknown provider requires none, which is what validation already reported.
+func ProviderSecretRoles(provider string) []string {
+	roles := providerSecretRoles[provider]
+	return append([]string(nil), roles...)
+}
+
 // Clone returns a deep copy, so a caller can try a change and discard it without touching the original.
 func (c *Config) Clone() *Config {
 	out := New()

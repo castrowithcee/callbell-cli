@@ -99,7 +99,11 @@ func openKnowledge(opts *Options) (*bookstack.Client, error) {
 			Capability: domainKnowledge + ".pages",
 		})
 	}
-	client, err := bookstack.Open(resolved, opts.Redactor)
+	secrets, err := opts.resolver()
+	if err != nil {
+		return nil, err
+	}
+	client, err := bookstack.Open(resolved, secrets, opts.Redactor)
 	if err != nil {
 		return nil, classifyUserError(err)
 	}

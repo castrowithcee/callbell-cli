@@ -113,7 +113,7 @@ than on the message text.
 | --- | --- |
 | `usage` | wrong invocation, unknown flag, unknown field |
 | `config-missing` | no configuration file at the resolved path |
-| `config-invalid` | the configuration file does not satisfy the schema |
+| `config-invalid` | the configuration file does not satisfy the schema, or a file beside it is not usable as it stands, for example a credential fallback others can read |
 | `connection-selection` | no connection given and no usable default |
 | `unknown-connection` | the named connection is not configured |
 | `unsupported-capability` | the capability is not offered |

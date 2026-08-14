@@ -7,15 +7,7 @@ read-only: the provider only ever sends `GET` requests.
 
 1. In BookStack, open your profile and create an API token. You receive a **token ID** and a **token
    secret**. The secret is shown once.
-2. Export both as environment variables:
-
-   ```sh
-   export CALLBELL_WIKI_TOKEN_ID=...
-   export CALLBELL_WIKI_TOKEN_SECRET=...
-   ```
-
-3. Describe the instance and the credential in your configuration. The file stores only the variable
-   **names**:
+2. Describe the instance and the credential in your configuration. The file holds no secret:
 
    ```yaml
    version: 1
@@ -25,10 +17,7 @@ read-only: the provider only ever sends `GET` requests.
        base_url: https://wiki.example.com
    credentials:
      wiki-reader:
-       type: env
-       values:
-         token-id: CALLBELL_WIKI_TOKEN_ID
-         token-secret: CALLBELL_WIKI_TOKEN_SECRET
+       type: keyring
    connections:
      wiki:
        service: wiki
@@ -38,8 +27,20 @@ read-only: the provider only ever sends `GET` requests.
        knowledge: wiki
    ```
 
+3. Hand both halves of the token to the credential store:
+
+   ```sh
+   printf %s "$TOKEN_ID" | callbell credential set wiki-reader token-id
+   printf %s "$TOKEN_SECRET" | callbell credential set wiki-reader token-secret
+   ```
+
+   On CI, or on a machine without a credential store, use `type: env` instead and export the variables
+   the credential names. Both paths and the plaintext fallback are described in
+   [configuration.md](configuration.md#where-a-secret-comes-from).
+
 4. Check the file: `callbell config validate`. It only reads the configuration; it contacts no instance
-   and reads no secret values. To check that the instance actually answers, run a real read:
+   and reads no secret values. `callbell config validate --secrets` additionally shows which source
+   delivers each secret. To check that the instance actually answers, run a real read:
 
    ```sh
    callbell knowledge pages list --limit 1

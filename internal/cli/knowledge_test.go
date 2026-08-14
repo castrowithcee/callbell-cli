@@ -45,10 +45,12 @@ defaults:
 `, baseURL))
 }
 
+// runCLI drives the command surface with a credential resolver that touches nothing outside the test: the
+// process environment, an empty in-process store, and no plaintext fallback.
 func runCLI(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	opts := &Options{}
+	opts := testOptions(t, nil)
 	code := run(newRootCommand(opts, defaultRegistry()), opts, args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }

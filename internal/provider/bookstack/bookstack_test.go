@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,7 +18,19 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
+
+// resolver returns a resolver that reads the process environment and an empty in-process credential store.
+// No test in this package may reach the credential store of the machine it runs on.
+func resolver(red *redact.Redactor) *secret.Resolver {
+	return secret.NewWith(os.Getenv, secret.NewMemoryStore(), nil, red)
+}
+
+// envCredential is the credential shape this provider used before the store existed: it names variables.
+func envCredential(values map[string]string) config.Credential {
+	return config.Credential{Type: config.CredentialTypeEnv, Values: values}
+}
 
 // Canary values stand in for real tokens. No test needs a real secret.
 const (
@@ -68,8 +81,8 @@ func newClient(t *testing.T, baseURL string, red *redact.Redactor) *Client {
 		Name:     "wiki",
 		Provider: Provider,
 		BaseURL:  baseURL,
-		EnvNames: map[string]string{roleTokenID: "TEST_TOKEN_ID", roleTokenSecret: "TEST_TOKEN_SECRET"},
-	}, red)
+		Secrets:  envCredential(map[string]string{roleTokenID: "TEST_TOKEN_ID", roleTokenSecret: "TEST_TOKEN_SECRET"}),
+	}, resolver(red), red)
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -467,8 +480,8 @@ func TestConnectionsStaySeparate(t *testing.T) {
 		t.Helper()
 		c, err := Open(&config.Resolved{
 			Name: "c", Provider: Provider, BaseURL: baseURL,
-			EnvNames: map[string]string{roleTokenID: idEnv, roleTokenSecret: secretEnv},
-		}, nil)
+			Secrets: envCredential(map[string]string{roleTokenID: idEnv, roleTokenSecret: secretEnv}),
+		}, resolver(nil), nil)
 		if err != nil {
 			t.Fatalf("Open() = %v", err)
 		}
@@ -564,10 +577,10 @@ func TestOpenRequiresSecrets(t *testing.T) {
 
 			_, err := Open(&config.Resolved{
 				Name: "c", Provider: Provider, BaseURL: "https://x.invalid",
-				Credential: "reader", EnvNames: tt.envNames,
-			}, nil)
+				Credential: "reader", Secrets: envCredential(tt.envNames),
+			}, resolver(nil), nil)
 
-			var missing *MissingSecretError
+			var missing *secret.MissingSecretError
 			if !errors.As(err, &missing) {
 				t.Fatalf("Open() = %v, want a *MissingSecretError", err)
 			}

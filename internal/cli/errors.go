@@ -7,7 +7,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
-	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // codeFor maps an error to its provider-independent code. Agents branch on the code instead of parsing
@@ -22,7 +22,8 @@ func codeFor(err error) output.Code {
 		projection  *output.ProjectionError
 		usage       *UsageError
 
-		missingSecret *bookstack.MissingSecretError
+		missingSecret *secret.MissingSecretError
+		permission    *secret.PermissionError
 		providerErr   *provider.Error
 	)
 	switch {
@@ -40,6 +41,11 @@ func codeFor(err error) output.Code {
 		return output.CodeUnknownConnection
 	case errors.As(err, &unsupported):
 		return output.CodeUnsupportedCapability
+	case errors.As(err, &permission):
+		// A credential file others can read is one state with one fix, whichever operation ran into it.
+		// It is named before the missing secret it causes, so reading, writing, and deleting all report
+		// the file rather than three different things.
+		return output.CodeConfigInvalid
 	case errors.As(err, &missingSecret):
 		return output.CodeMissingSecret
 	case errors.As(err, &providerErr):
@@ -81,12 +87,13 @@ func classifyUserError(err error) error {
 		unsupported *capability.UnsupportedError
 		projection  *output.ProjectionError
 
-		missingSecret *bookstack.MissingSecretError
+		missingSecret *secret.MissingSecretError
+		permission    *secret.PermissionError
 	)
 	switch {
 	case errors.As(err, &notFound), errors.As(err, &invalid), errors.As(err, &selection),
 		errors.As(err, &unknownConn), errors.As(err, &unsupported), errors.As(err, &projection),
-		errors.As(err, &missingSecret):
+		errors.As(err, &missingSecret), errors.As(err, &permission):
 		return &UsageError{err}
 	}
 	return err

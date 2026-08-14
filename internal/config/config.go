@@ -1,6 +1,7 @@
 // Package config loads and validates the callbell configuration and resolves the connection a command
-// should use. It never reads, stores, or reports secret values: a credential only names the environment
-// variables that carry them.
+// should use. It never reads, stores, or reports secret values: a credential only says where its secrets
+// come from, either by naming environment variables or by pointing at the system credential store.
+// Resolving a secret from that description is the job of package secret.
 package config
 
 import (
@@ -39,11 +40,15 @@ type Service struct {
 	Options  map[string]string `yaml:"options,omitempty"`
 }
 
-// Credential names the source of the secrets a provider needs. Only the type "env" exists; Values maps a
-// provider-defined secret role to the name of an environment variable, never to its value.
+// Credential names the source of the secrets a provider needs, never a secret itself.
+//
+// Type "env" maps every provider-defined secret role to the name of an environment variable in Values.
+// That is the unchanged path for CI and headless use. Type "keyring" names nothing at all: its secrets
+// live in the system credential store, and Values must stay empty, so this file cannot hold a secret even
+// by accident.
 type Credential struct {
 	Type   string            `yaml:"type"`
-	Values map[string]string `yaml:"values"`
+	Values map[string]string `yaml:"values,omitempty"`
 }
 
 // Connection binds exactly one service to exactly one credential. Target is an optional provider-specific
@@ -59,8 +64,18 @@ type Defaults struct {
 	Connections map[string]string `yaml:"connections,omitempty"`
 }
 
-// CredentialTypeEnv is the only supported credential type.
-const CredentialTypeEnv = "env"
+// The supported credential types.
+const (
+	// CredentialTypeEnv resolves from the environment variables the credential names.
+	CredentialTypeEnv = "env"
+	// CredentialTypeKeyring resolves from the system credential store, and from the plaintext fallback
+	// beside this file when that fallback was switched on. Both are overridden by a derived environment
+	// variable, so the same credential still works in a container.
+	CredentialTypeKeyring = "keyring"
+)
+
+// CredentialTypes lists the supported credential types, in the order the documentation shows them.
+func CredentialTypes() []string { return []string{CredentialTypeEnv, CredentialTypeKeyring} }
 
 // providerSecretRoles lists the secret roles every provider requires. Roles are provider-defined: a
 // provider authenticating with a single bearer token needs one role, BookStack needs two.
@@ -193,19 +208,28 @@ func (c *Config) Validate() error {
 	for _, name := range sortedKeys(c.Credentials) {
 		cred := c.Credentials[name]
 		checkName("credentials", "credential name", name)
-		if cred.Type != CredentialTypeEnv {
-			report("credentials.%s: type must be %q, got %q", name, CredentialTypeEnv, cred.Type)
-		}
-		if len(cred.Values) == 0 {
-			report("credentials.%s.values: at least one secret role is required", name)
-		}
-		for _, role := range sortedKeys(cred.Values) {
-			if role == "" {
-				report("credentials.%s.values: a secret role must not be empty", name)
+		switch cred.Type {
+		case CredentialTypeEnv:
+			if len(cred.Values) == 0 {
+				report("credentials.%s.values: at least one secret role is required", name)
 			}
-			if err := validateEnvName(cred.Values[role]); err != nil {
-				report("credentials.%s.values.%s: %v", name, role, err)
+			for _, role := range sortedKeys(cred.Values) {
+				if role == "" {
+					report("credentials.%s.values: a secret role must not be empty", name)
+				}
+				if err := validateEnvName(cred.Values[role]); err != nil {
+					report("credentials.%s.values.%s: %v", name, role, err)
+				}
 			}
+		case CredentialTypeKeyring:
+			// The message never quotes what was written there: a value under a keyring credential is
+			// most likely the secret itself, pasted into the file.
+			if len(cred.Values) > 0 {
+				report("credentials.%s.values: %s", name, keyringValuesRule)
+			}
+		default:
+			report("credentials.%s: type must be one of %s, got %q",
+				name, strings.Join(CredentialTypes(), ", "), cred.Type)
 		}
 	}
 
@@ -220,7 +244,10 @@ func (c *Config) Validate() error {
 		if !credOK {
 			report("connections.%s.credential: unknown credential %q", name, conn.Credential)
 		}
-		if ok && credOK {
+		// Only an env credential can be incomplete in the file. A keyring credential names no roles
+		// here; which ones it must supply follows from the provider, and whether they are supplied is a
+		// question about the credential store, not about this file.
+		if ok && credOK && cred.Type == CredentialTypeEnv {
 			for _, role := range providerSecretRoles[service.Provider] {
 				if cred.Values[role] == "" {
 					report("connections.%s: provider %q requires the secret role %q in credential %q",
@@ -266,6 +293,11 @@ func validateBaseURL(raw string) error {
 // the redactor cannot catch it: it only knows values that were resolved from an environment variable.
 const envNameRule = "must be the name of an environment variable, written with letters, digits and " +
 	"underscores and not starting with a digit, never the secret value itself"
+
+// keyringValuesRule states why a keyring credential carries no values. Like envNameRule it never quotes
+// the input: whatever stands under a keyring credential is most likely the secret itself.
+const keyringValuesRule = "must be absent for a keyring credential, whose secrets live in the credential " +
+	"store; set them with 'callbell credential set'"
 
 // nameRule states the character set of every service, credential, connection and domain name. These names
 // are configuration keys and `--connection` arguments, so they stay free of quoting and shell surprises.

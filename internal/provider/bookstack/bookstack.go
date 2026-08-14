@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // Provider is the provider name used in the configuration.
@@ -92,27 +92,9 @@ type Client struct {
 	http *http.Client
 }
 
-// MissingSecretError reports that a credential does not yield a secret: either it names no variable for the
-// role, or the variable it names carries no value. It is a usage problem.
-//
-// The message points at the configuration key that needs fixing and never repeats what the user wrote
-// there. The configured text is treated as a possible secret, because a user who pastes a token into the
-// field instead of a variable name writes something that a name rule cannot tell apart from a real name: a
-// BookStack token is letters and digits, and so is a legal variable name. Naming the key keeps the message
-// actionable without echoing the input.
-type MissingSecretError struct {
-	Role       string
-	Credential string
-}
-
-func (e *MissingSecretError) Error() string {
-	return fmt.Sprintf("credentials.%s.values.%s does not yield a secret: it must name an environment "+
-		"variable that is set", e.Credential, e.Role)
-}
-
-// Open builds a client for a resolved connection. It reads the secrets the credential names, registers
-// them with the redactor, and never returns them.
-func Open(resolved *config.Resolved, red *redact.Redactor) (*Client, error) {
+// Open builds a client for a resolved connection. The secrets come from the resolver, which owns the
+// cascade and the redaction; this provider only asks for the two roles it needs and never returns them.
+func Open(resolved *config.Resolved, secrets *secret.Resolver, red *redact.Redactor) (*Client, error) {
 	base, err := url.Parse(resolved.BaseURL)
 	if err != nil {
 		return nil, &provider.Error{
@@ -121,11 +103,11 @@ func Open(resolved *config.Resolved, red *redact.Redactor) (*Client, error) {
 		}
 	}
 
-	tokenID, err := secret(resolved, roleTokenID)
+	tokenID, err := role(resolved, secrets, roleTokenID)
 	if err != nil {
 		return nil, err
 	}
-	tokenSecret, err := secret(resolved, roleTokenSecret)
+	tokenSecret, err := role(resolved, secrets, roleTokenSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -150,16 +132,20 @@ func Open(resolved *config.Resolved, red *redact.Redactor) (*Client, error) {
 	}, nil
 }
 
-func secret(resolved *config.Resolved, role string) (string, error) {
-	name := resolved.EnvNames[role]
-	if name == "" {
-		return "", &MissingSecretError{Role: role, Credential: resolved.Credential}
+// role resolves one secret role of the connection. Which stage delivers is not this provider's business:
+// it needs the value, and the resolver decides where it comes from.
+func role(resolved *config.Resolved, secrets *secret.Resolver, name string) (string, error) {
+	if secrets == nil {
+		return "", &provider.Error{
+			Class: provider.ClassProviderError, Op: "open",
+			Message: "no credential resolver was configured",
+		}
 	}
-	value := os.Getenv(name)
-	if value == "" {
-		return "", &MissingSecretError{Role: role, Credential: resolved.Credential}
+	value, err := secrets.Resolve(resolved.Credential, resolved.Secrets, name)
+	if err != nil {
+		return "", err
 	}
-	return value, nil
+	return value.Secret, nil
 }
 
 // redirectRefusedError reports a redirect that would have left the configured origin. The credential is
