@@ -455,6 +455,11 @@ func TestNameOfAnExistingEntryIsReadOnly(t *testing.T) {
 	if !m.fields[0].readOnly {
 		t.Fatal("the name field of an existing entry should be read only")
 	}
+	// The field takes no editing focus either, so the keys of a rename attempt go somewhere else entirely
+	// and the stored name cannot change by any route.
+	if m.focus == 0 {
+		t.Fatal("the form opened on the locked field")
+	}
 	clearField(t, m)
 	typeText(t, m, "renamed")
 	press(t, m, "enter")
@@ -640,10 +645,14 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 			t.Errorf("the credential form does not say %q:\n%s", want, view)
 		}
 	}
-	// Every role field carries the hint, not just the first one. A hint is wrapped into the terminal, so
-	// the test looks for a fragment that survives wrapping rather than for the whole sentence.
-	if got, want := strings.Count(view, "the NAME of an environment"), len(config.SecretRoles()); got != want {
-		t.Errorf("hint appears %d times, want once per role field (%d):\n%s", got, want, view)
+	// The sentence is about the kind of row, so it stands once and speaks of every role row. A hint is
+	// wrapped into the terminal, so the test looks for a fragment that survives wrapping rather than for
+	// the whole sentence.
+	if got := strings.Count(view, "the NAME of an environment"); got != 1 {
+		t.Errorf("hint appears %d times, want exactly once for all role rows:\n%s", got, view)
+	}
+	if !strings.Contains(view, "every role row") {
+		t.Errorf("the hint does not say that it is about every role row:\n%s", view)
 	}
 	if !strings.Contains(view, "a key you choose, without spaces") {
 		t.Errorf("the name field has no hint:\n%s", view)
@@ -731,5 +740,249 @@ func TestStartsWithoutAConfigurationFile(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, "Services") {
 		t.Errorf("view = %q", view)
+	}
+}
+
+// formLines is the view without the padding the styles add, so a test can look at the shape of the form
+// rather than at the cells that fill it out.
+func formLines(m *Model) []string {
+	lines := strings.Split(m.View(), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	return lines
+}
+
+// fieldLine is the line the given field is drawn on. Field lines carry the two-cell margin or the focus
+// marker; hint lines are indented further, so they cannot be mistaken for one.
+func fieldLine(t *testing.T, lines []string, label string) int {
+	t.Helper()
+	for i, l := range lines {
+		body := strings.TrimPrefix(l, "> ")
+		if body == l {
+			body = strings.TrimPrefix(l, "  ")
+			if body == l {
+				continue
+			}
+		}
+		if strings.HasPrefix(body, label) {
+			return i
+		}
+	}
+	t.Fatalf("field %q is not on screen:\n%s", label, strings.Join(lines, "\n"))
+	return -1
+}
+
+// hintBlocks collects every hint of the form, each one joined back into the sentence it was wrapped from.
+func hintBlocks(lines []string) []string {
+	var blocks []string
+	var current []string
+	flush := func() {
+		if len(current) > 0 {
+			blocks = append(blocks, strings.Join(current, " "))
+			current = nil
+		}
+	}
+	for _, l := range lines {
+		if strings.HasPrefix(l, "    ") {
+			current = append(current, strings.TrimSpace(l))
+			continue
+		}
+		flush()
+	}
+	flush()
+	return blocks
+}
+
+// The name of an existing entry says that it is locked, keeps no hint that claims otherwise, and cannot be
+// focused for editing, while every other field stays reachable and the form still saves.
+func TestALockedNameSaysSoAndTakesNoEditingFocus(t *testing.T) {
+	m, store, _ := newModel(t)
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+
+	openSectionByName(t, m, sectionServices)
+	press(t, m, "enter")
+
+	view := m.View()
+	if !strings.Contains(view, "read-only") || !strings.Contains(view, "create it again to rename") {
+		t.Errorf("the locked field does not say that it is locked:\n%s", view)
+	}
+	if strings.Contains(view, "connections and --connection refer to it") {
+		t.Errorf("the locked field still claims the name can be chosen:\n%s", view)
+	}
+	// Locked is not hidden: the value stays on screen, it just cannot be entered.
+	if !strings.Contains(view, "wiki") {
+		t.Errorf("the locked field no longer shows its value:\n%s", view)
+	}
+
+	// Walking the form in both directions never stops on it, and the text input behind it stays blurred.
+	visited := map[string]bool{}
+	for _, key := range []string{"tab", "tab", "tab", "shift+tab", "shift+tab", "shift+tab", "down", "up"} {
+		press(t, m, key)
+		if m.focus == 0 {
+			t.Fatalf("%q put the focus on the locked field", key)
+		}
+		if m.fields[0].input.Focused() {
+			t.Fatalf("the locked field took editing focus after %q", key)
+		}
+		visited[m.fields[m.focus].label] = true
+	}
+	for _, f := range m.fields {
+		if !f.readOnly && !visited[f.label] {
+			t.Errorf("field %q cannot be reached any more", f.label)
+		}
+	}
+
+	// The form is not a trap: it still saves, under the name that could not be changed.
+	for i := 0; i < len(m.fields) && m.fields[m.focus].label != "base url"; i++ {
+		press(t, m, "tab")
+	}
+	if got := m.fields[m.focus].label; got != "base url" {
+		t.Fatalf("focused field = %q, want the base url", got)
+	}
+	clearField(t, m)
+	typeText(t, m, "https://wiki.example.invalid/next")
+	press(t, m, "enter")
+
+	if m.fail != "" {
+		t.Fatalf("editor reported %q", m.fail)
+	}
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := saved.Services["wiki"].BaseURL; got != "https://wiki.example.invalid/next" {
+		t.Errorf("saved base url = %q, the form did not save through the locked field", got)
+	}
+}
+
+// A form whose first field is locked opens on the first field that takes input, in every section that has
+// one.
+func TestALockedFieldDoesNotSwallowTheOpeningFocus(t *testing.T) {
+	m, _, _ := newModel(t)
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+	addCredential(t, m, "reader", "WIKI_READER_ID", "WIKI_READER_SECRET")
+	addConnection(t, m, "wiki", "wiki", "reader")
+
+	openSectionByName(t, m, sectionDefaults)
+	press(t, m, "n")
+	typeText(t, m, "wiki.example.invalid")
+	press(t, m, "tab")
+	selectChoice(t, m, "wiki")
+	press(t, m, "enter")
+	if m.fail != "" {
+		t.Fatalf("editor reported %q", m.fail)
+	}
+
+	for _, s := range []section{sectionServices, sectionCredentials, sectionConnections, sectionDefaults} {
+		openSectionByName(t, m, s)
+		pump(t, m, "enter")
+		if m.screen != screenForm {
+			t.Fatalf("%v did not open a form", s)
+		}
+		if m.fields[m.focus].readOnly {
+			t.Errorf("%v opened its form on a locked field (%q)", s, m.fields[m.focus].label)
+		}
+		press(t, m, "esc")
+	}
+}
+
+// A hint belongs to the field above it: it stands directly under its own row, and a blank line separates
+// the block from the next field. It holds at a width that wraps the hints too.
+func TestAHintBelongsToTheFieldAboveIt(t *testing.T) {
+	for _, width := range []int{100, 46} {
+		m, _, _ := newModel(t)
+		m.Update(tea.WindowSizeMsg{Width: width})
+		openSectionByName(t, m, sectionCredentials)
+		press(t, m, "n")
+		press(t, m, "tab")
+		selectChoice(t, m, config.CredentialTypeEnv)
+
+		lines := formLines(m)
+		wrappedHints := 0
+		for i, f := range m.fields {
+			at := fieldLine(t, lines, f.label)
+			if i > 0 && lines[at-1] != "" {
+				t.Errorf("width %d: field %q is not separated from the block above it:\n%s",
+					width, f.label, strings.Join(lines, "\n"))
+			}
+			hint := m.fieldHint(f)
+			if hint == "" {
+				if at+1 < len(lines) && strings.HasPrefix(lines[at+1], "    ") {
+					t.Errorf("width %d: field %q has no hint but an indented line under it:\n%s",
+						width, f.label, strings.Join(lines, "\n"))
+				}
+				continue
+			}
+			// The hint starts on the very next line, and every continuation line of a wrapped hint stays
+			// inside the same block, on the same indent.
+			height := 0
+			for j := at + 1; j < len(lines) && lines[j] != ""; j++ {
+				if !strings.HasPrefix(lines[j], "    ") {
+					t.Errorf("width %d: the hint block of %q leaves its indent at %q:\n%s",
+						width, f.label, lines[j], strings.Join(lines, "\n"))
+				}
+				height++
+			}
+			if height == 0 {
+				t.Errorf("width %d: the hint of %q does not stand under it:\n%s",
+					width, f.label, strings.Join(lines, "\n"))
+			}
+			if height > 1 {
+				wrappedHints++
+			}
+		}
+		if width == 46 && wrappedHints == 0 {
+			t.Errorf("width %d: no hint wrapped, the narrow case is not being tested:\n%s",
+				width, strings.Join(lines, "\n"))
+		}
+	}
+}
+
+// The same sentence never stands twice under one another. What all role rows have in common is said once;
+// what differs per role stays on its own row.
+func TestNoHintStandsTwice(t *testing.T) {
+	m, _, _ := newModel(t)
+
+	openSectionByName(t, m, sectionCredentials)
+	press(t, m, "n")
+	press(t, m, "tab")
+	selectChoice(t, m, config.CredentialTypeEnv)
+	assertNoRepeatedHint(t, m, "the env credential form")
+	if got := strings.Count(m.View(), "the NAME of an environment"); got != 1 {
+		t.Errorf("the env sentence stands %d times, want once:\n%s", got, m.View())
+	}
+
+	// The keyring rows build their hint themselves, out of the keys and the stages the resolver checked.
+	addKeyringCredential(t, m, "store")
+	openSectionByName(t, m, sectionCredentials)
+	pump(t, m, "enter")
+	if m.screen != screenForm {
+		t.Fatalf("screen = %v, want the form of the keyring credential", m.screen)
+	}
+	assertNoRepeatedHint(t, m, "the keyring credential form")
+
+	view := m.View()
+	if got := strings.Count(view, "store it in the plaintext file"); got != 1 {
+		t.Errorf("the secret keys stand %d times, want once:\n%s", got, view)
+	}
+	// The stages differ per role, so every role keeps its own.
+	if got, want := strings.Count(view, "checked:"), len(config.SecretRoles()); got != want {
+		t.Errorf("the checked stages appear %d times, want once per role (%d):\n%s", got, want, view)
+	}
+}
+
+func assertNoRepeatedHint(t *testing.T, m *Model, what string) {
+	t.Helper()
+	blocks := hintBlocks(formLines(m))
+	seen := map[string]bool{}
+	for _, block := range blocks {
+		if seen[block] {
+			t.Errorf("%s says the same hint twice: %q\n%s", what, block, m.View())
+		}
+		seen[block] = true
+	}
+	if len(blocks) == 0 {
+		t.Errorf("%s shows no hint at all:\n%s", what, m.View())
 	}
 }

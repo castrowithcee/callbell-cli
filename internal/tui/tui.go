@@ -82,8 +82,12 @@ type field struct {
 	// configuration core, and the editor must not grow schema knowledge of its own.
 	hint string
 	// readOnly marks the name of an existing entry. Renaming would silently break every reference to it,
-	// so an entry is changed in place or deleted and created again.
+	// so an entry is changed in place or deleted and created again. A read-only field takes no editing
+	// focus and says that it is locked instead of describing a choice that is no longer there.
 	readOnly bool
+	// roleLead marks the first of the secret role rows. What those rows hold is the same for all of them,
+	// so it is said once, above them, rather than repeated under each one.
+	roleLead bool
 }
 
 // Field hints. They name the shape of an entry, never a rule the core owns: the core states the exact
@@ -92,9 +96,15 @@ const (
 	nameHint    = "a key you choose, without spaces; connections and --connection refer to it"
 	domainHint  = "a key you choose, without spaces; commands look up this default by it"
 	baseURLHint = "the root url of the instance, with scheme http or https"
-	envHint     = "the NAME of an environment variable that holds the secret, never the secret itself"
-	typeHint    = "env names one environment variable per role; keyring keeps the secrets in the credential store"
-	secretHint  = "s store the secret · p store it in the plaintext file · x remove it; typing is masked"
+	// envHint is said once for all role rows and speaks of all of them: they are the same kind of row, so
+	// repeating the sentence under the next one would read like a fault and add nothing.
+	envHint = "every role row holds the NAME of an environment variable that holds the secret, " +
+		"never the secret itself"
+	typeHint   = "env names one environment variable per role; keyring keeps the secrets in the credential store"
+	secretHint = "s store the secret · p store it in the plaintext file · x remove it; typing is masked"
+	// lockedHint is what the name of an existing entry says about itself. It replaces the hint that
+	// describes a free choice, which is the opposite of what this field does.
+	lockedHint = "read-only; delete this entry and create it again to rename it"
 )
 
 // typeLabel is the field that decides what a credential is: which variables it names, or that its secrets
@@ -489,9 +499,9 @@ func (m *Model) entryNames(s section) []string {
 func (m *Model) openForm(name string) tea.Cmd {
 	m.editing = name
 	m.screen = screenForm
-	m.focus = 0
 	m.clearMessages()
 	m.fields = m.buildFields(name)
+	m.focus = m.firstEditable()
 	m.applyFocus()
 	if m.section == sectionCredentials && m.credentialType() == config.CredentialTypeKeyring {
 		return m.refreshSources(m.editedQuery())
@@ -519,7 +529,7 @@ func (m *Model) credentialTypeChosen() tea.Cmd {
 			// A secret row builds its hint from what the resolver reported, so it carries none itself.
 			f.kind, f.hint = fieldSecret, ""
 		} else {
-			f.kind, f.hint = fieldEnvName, envHint
+			f.kind, f.hint = fieldEnvName, roleHint(f.roleLead)
 		}
 	}
 	m.applyFocus()
@@ -530,11 +540,16 @@ func (m *Model) credentialTypeChosen() tea.Cmd {
 }
 
 func (m *Model) buildFields(name string) []field {
-	fields := []field{textField("name", name, name != "").withHint(nameHint)}
+	key := textField("name", name, name != "").withHint(nameHint)
 	if m.section == sectionDefaults {
-		fields[0].label = "domain"
-		fields[0].hint = domainHint
+		key.label, key.hint = "domain", domainHint
 	}
+	if key.readOnly {
+		// A locked field must not go on describing a free choice: that hint would claim the opposite of
+		// what the field does. It says that it is locked, and how to get the rename it refuses.
+		key.hint = lockedHint
+	}
+	fields := []field{key}
 
 	switch m.section {
 	case sectionServices:
@@ -552,8 +567,8 @@ func (m *Model) buildFields(name string) []field {
 			credType = config.CredentialTypeKeyring
 		}
 		fields = append(fields, choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint))
-		for _, role := range config.SecretRoles() {
-			fields = append(fields, roleField(role, cred.Values[role], credType))
+		for i, role := range config.SecretRoles() {
+			fields = append(fields, roleField(role, cred.Values[role], credType, i == 0))
 		}
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
@@ -678,10 +693,34 @@ func (m *Model) fieldValue(label string) string {
 	return ""
 }
 
+// moveFocus steps to the next field that can be edited. A read-only field is stepped over rather than
+// stopped on: stopping there would show a cursor on a field that swallows every key, which is the
+// contradiction this is here to remove. The field stays drawn and readable, it just cannot be entered.
+//
+// The search runs at most once around the form, so a form made only of read-only fields keeps the focus
+// where it is instead of spinning; nothing traps the user, because esc and enter are handled before this.
 func (m *Model) moveFocus(by int) {
 	m.trimFields()
-	m.focus = wrap(m.focus+by, len(m.fields))
+	next := m.focus
+	for i := 0; i < len(m.fields); i++ {
+		next = wrap(next+by, len(m.fields))
+		if !m.fields[next].readOnly {
+			break
+		}
+	}
+	m.focus = next
 	m.applyFocus()
+}
+
+// firstEditable is where a form opens. A form whose first field is locked opens on the first field that
+// takes input, so the user starts where typing has an effect.
+func (m *Model) firstEditable() int {
+	for i := range m.fields {
+		if !m.fields[i].readOnly {
+			return i
+		}
+	}
+	return 0
 }
 
 // trimFields makes the shown text the text that will be stored. value() ignores spaces at both edges, so a
@@ -726,14 +765,26 @@ func textField(label, value string, readOnly bool) field {
 // environment variable, which the editor reads and writes; under keyring it stands for an entry in the
 // credential store, which the editor can fill and remove but never read. The value is never read into the
 // editor in either case.
-func roleField(role, envName, credType string) field {
+//
+// lead marks the first role row, the one that carries what all of them have in common.
+func roleField(role, envName, credType string, lead bool) field {
 	f := textField(role, envName, false)
-	f.kind, f.hint = fieldEnvName, envHint
+	f.roleLead = lead
+	f.kind, f.hint = fieldEnvName, roleHint(lead)
 	if credType == config.CredentialTypeKeyring {
 		// A secret row builds its hint from what the resolver reported, so it carries none itself.
 		f.kind, f.hint = fieldSecret, ""
 	}
 	return f
+}
+
+// roleHint is what one role row of an env credential says. Only the first one says it: the sentence is
+// about the kind of row, not about one role, and standing twice under one another it reads as a fault.
+func roleHint(lead bool) string {
+	if lead {
+		return envHint
+	}
+	return ""
 }
 
 func choiceField(label string, choices []string, value string) field {
@@ -796,6 +847,12 @@ func (m *Model) View() string {
 		}
 		b.WriteString(titleStyle.Render(what) + "\n\n")
 		for i, f := range m.fields {
+			// A field and its hint are one block, and the blank line stands between the blocks. Without it
+			// the hint is as close to the next field as to its own, and an indented line under a row of
+			// rows reads as the introduction to what follows rather than as the note of what precedes.
+			if i > 0 {
+				b.WriteString("\n")
+			}
 			b.WriteString(line(i == m.focus, m.renderField(f, i == m.focus)) + "\n")
 			if hint := m.fieldHint(f); hint != "" {
 				b.WriteString(m.indented(hint) + "\n")
@@ -902,7 +959,7 @@ func (m *Model) indented(text string) string {
 // which is the actionable half of a missing secret and names no value.
 func (m *Model) fieldHint(f field) string {
 	if f.kind == fieldSecret {
-		return m.secretRowHint(m.editing, f.label)
+		return m.secretRowHint(m.editing, f.label, f.roleLead)
 	}
 	return f.hint
 }

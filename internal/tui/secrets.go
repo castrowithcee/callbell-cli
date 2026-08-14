@@ -435,12 +435,19 @@ func (m *Model) storedSource(credential, role string) string {
 
 // secretRowHint says what the keys on a secret row do, and, once the resolver has answered, which stages
 // were checked. The stages are the actionable part of a missing secret, and they name no value.
-func (m *Model) secretRowHint(credential, role string) string {
-	hint := secretHint
-	if checked := m.checked[secret.StoreKey(credential, role)]; len(checked) > 0 {
-		hint += "; checked: " + strings.Join(checked, ", ")
+//
+// The keys are the same on every role row, so they are said once, on the first one, like the sentence an
+// env credential carries there; the stages differ per role, so every row keeps its own. The key line at the
+// foot of the form repeats the keys for whichever row the focus is on.
+func (m *Model) secretRowHint(credential, role string, lead bool) string {
+	var parts []string
+	if lead {
+		parts = append(parts, secretHint)
 	}
-	return hint
+	if checked := m.checked[secret.StoreKey(credential, role)]; len(checked) > 0 {
+		parts = append(parts, "checked: "+strings.Join(checked, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // secretRowKey handles the keys of a focused secret row.
