@@ -9,6 +9,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -57,6 +58,7 @@ const (
 	screenList
 	screenForm
 	screenConfirm
+	screenPlaintextConfirm
 	screenSecret
 )
 
@@ -95,13 +97,13 @@ type field struct {
 const (
 	nameHint    = "a key you choose, without spaces; connections and --connection refer to it"
 	domainHint  = "a key you choose, without spaces; commands look up this default by it"
-	baseURLHint = "the root url of the instance, with scheme http or https"
+	baseURLHint = "the root url of the instance, with scheme http or https and without /api"
 	// envHint is said once for all role rows and speaks of all of them: they are the same kind of row, so
 	// repeating the sentence under the next one would read like a fault and add nothing.
 	envHint = "every role row holds the NAME of an environment variable that holds the secret, " +
 		"never the secret itself"
 	typeHint   = "env names one environment variable per role; keyring keeps the secrets in the credential store"
-	secretHint = "s store the secret · p store it in the plaintext file · x remove it; typing is masked"
+	secretHint = "s system keyring · p unencrypted file (asks first) · x remove; typing is masked"
 	// lockedHint is what the name of an existing entry says about itself. It replaces the hint that
 	// describes a free choice, which is the opposite of what this field does.
 	lockedHint = "read-only; delete this entry and create it again to rename it"
@@ -154,6 +156,10 @@ type Model struct {
 	probing string
 	// width is what the terminal reported. Messages are wrapped into it instead of being cut off.
 	width int
+	// configExists distinguishes a loaded file from a new in-memory configuration. The default directory
+	// is deliberately created only by the first successful save, and the editor must say so instead of
+	// claiming that a file which does not exist was loaded.
+	configExists bool
 
 	// Credential store state. The editor never holds a secret: it holds where each role resolves from and
 	// which stages the resolver checked, both of which name no value.
@@ -188,12 +194,14 @@ type Model struct {
 // configuration stays editable and only the operations that would reach a store report why they cannot.
 func New(store *config.Store, tester Tester, secrets Secrets, redactor *redact.Redactor) (*Model, error) {
 	cfg, err := store.Load()
+	configExists := true
 	if err != nil {
 		var notFound *config.NotFoundError
 		if !asNotFound(err, &notFound) {
 			return nil, err
 		}
 		cfg = config.New()
+		configExists = false
 	}
 	if redactor == nil {
 		redactor = &redact.Redactor{}
@@ -206,8 +214,7 @@ func New(store *config.Store, tester Tester, secrets Secrets, redactor *redact.R
 		secrets: secrets,
 		sources: map[string]secret.Source{},
 		checked: map[string][]string{},
-		width:   defaultWidth,
-		status:  "Loaded " + store.Path(),
+		width:   defaultWidth, configExists: configExists,
 	}, nil
 }
 
@@ -247,6 +254,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.updateForm(msg)
 		case screenConfirm:
 			return m, m.updateConfirm(msg)
+		case screenPlaintextConfirm:
+			return m, m.updatePlaintextConfirm(msg)
 		case screenSecret:
 			return m, m.updateSecret(msg)
 		}
@@ -286,6 +295,11 @@ func (m *Model) updateList(key tea.KeyMsg) tea.Cmd {
 	case "down", "j":
 		m.cursor = wrap(m.cursor+1, len(m.names))
 	case "n":
+		if reason := m.newEntryBlocked(); reason != "" {
+			m.status = ""
+			m.fail = reason
+			return nil
+		}
 		return m.openForm("")
 	case "enter":
 		if name, ok := m.selected(); ok {
@@ -300,6 +314,31 @@ func (m *Model) updateList(key tea.KeyMsg) tea.Cmd {
 		return m.startTest()
 	}
 	return nil
+}
+
+// newEntryBlocked keeps a form with empty choice lists from turning an obvious missing prerequisite into
+// a schema error. Existing entries remain editable even if a hand-written file is inconsistent; the core
+// still owns validation in that case.
+func (m *Model) newEntryBlocked() string {
+	switch m.section {
+	case sectionConnections:
+		var missing []string
+		if len(m.cfg.Services) == 0 {
+			missing = append(missing, "a service")
+		}
+		if len(m.cfg.Credentials) == 0 {
+			missing = append(missing, "a credential")
+		}
+		if len(missing) > 0 {
+			return "Create " + strings.Join(missing, " and ") +
+				" before adding a connection. Press esc to return to setup."
+		}
+	case sectionDefaults:
+		if len(m.cfg.Connections) == 0 {
+			return "Create a connection before choosing a default. Press esc to return to setup."
+		}
+	}
+	return ""
 }
 
 func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
@@ -400,10 +439,26 @@ func (m *Model) startTest() tea.Cmd {
 		class, err := tester(ctx, name)
 		msg := testDoneMsg{id: id, class: class}
 		if err != nil {
-			msg.err = err.Error()
+			msg.err = connectionTestError(err)
 		}
 		return msg
 	}
+}
+
+// connectionTestError turns a missing credential role into an editor action. Other errors stay intact for
+// redaction, but receive context when they are displayed by finishTest.
+func connectionTestError(err error) string {
+	var missing *secret.MissingSecretError
+	if !errors.As(err, &missing) {
+		return err.Error()
+	}
+	if missing.Type == config.CredentialTypeKeyring {
+		return fmt.Sprintf("credential %q is missing %s; open Credentials, edit it, select %s, and press s "+
+			"(or p when the system credential store is unavailable)",
+			missing.Credential, missing.Role, missing.Role)
+	}
+	return fmt.Sprintf("credential %q is missing %s; open Credentials and set the environment variable "+
+		"named for that role", missing.Credential, missing.Role)
 }
 
 // finishTest accepts a result only while it is still the current one, so a cancelled test cannot report
@@ -420,7 +475,7 @@ func (m *Model) finishTest(done testDoneMsg) {
 	}
 	if done.err != "" {
 		// Redaction happens before anything reaches the model, including an unexpected provider error.
-		m.fail = m.redactor.Apply(done.err)
+		m.fail = "Connection test could not run: " + m.redactor.Apply(done.err)
 		return
 	}
 	m.testClass = done.class
@@ -529,7 +584,7 @@ func (m *Model) credentialTypeChosen() tea.Cmd {
 			// A secret row builds its hint from what the resolver reported, so it carries none itself.
 			f.kind, f.hint = fieldSecret, ""
 		} else {
-			f.kind, f.hint = fieldEnvName, roleHint(f.roleLead)
+			f.kind, f.hint = fieldEnvName, roleHint(f.label, f.roleLead)
 		}
 	}
 	m.applyFocus()
@@ -598,6 +653,8 @@ func (m *Model) submit() tea.Cmd {
 // save applies the form to a copy of the configuration and saves it. The editor keeps the change only when
 // the store accepted it.
 func (m *Model) save(name string) tea.Cmd {
+	wasNewKeyring := m.section == sectionCredentials && m.editing == "" &&
+		m.credentialType() == config.CredentialTypeKeyring
 	candidate := m.cfg.Clone()
 	if err := m.apply(candidate, name); err != nil {
 		m.fail = m.redactor.Apply(err.Error())
@@ -608,6 +665,20 @@ func (m *Model) save(name string) tea.Cmd {
 		return nil
 	}
 	m.cfg = candidate
+	m.configExists = true
+	if wasNewKeyring {
+		cmd := m.openForm(name)
+		for i := range m.fields {
+			if m.fields[i].kind == fieldSecret {
+				m.focus = i
+				break
+			}
+		}
+		m.applyFocus()
+		m.status = "Credential saved. Add the BookStack token ID and token secret below: press s on each " +
+			"role, or p if the system credential store is unavailable."
+		return cmd
+	}
 	cmd := m.openSection(m.section)
 	m.status = "Saved " + name
 	return cmd
@@ -679,6 +750,7 @@ func (m *Model) delete() tea.Cmd {
 		return nil
 	}
 	m.cfg = candidate
+	m.configExists = true
 	cmd := m.openSection(m.section)
 	m.status = "Deleted " + name
 	return cmd
@@ -770,7 +842,7 @@ func textField(label, value string, readOnly bool) field {
 func roleField(role, envName, credType string, lead bool) field {
 	f := textField(role, envName, false)
 	f.roleLead = lead
-	f.kind, f.hint = fieldEnvName, roleHint(lead)
+	f.kind, f.hint = fieldEnvName, roleHint(role, lead)
 	if credType == config.CredentialTypeKeyring {
 		// A secret row builds its hint from what the resolver reported, so it carries none itself.
 		f.kind, f.hint = fieldSecret, ""
@@ -778,13 +850,17 @@ func roleField(role, envName, credType string, lead bool) field {
 	return f
 }
 
-// roleHint is what one role row of an env credential says. Only the first one says it: the sentence is
-// about the kind of row, not about one role, and standing twice under one another it reads as a fault.
-func roleHint(lead bool) string {
-	if lead {
-		return envHint
+// roleHint says what the provider-defined role means. Only the first row adds the explanation shared by
+// every env row; repeating that part under the next role would read like a fault.
+func roleHint(role string, lead bool) string {
+	var parts []string
+	if description := config.SecretRoleDescription(role); description != "" {
+		parts = append(parts, description)
 	}
-	return ""
+	if lead {
+		parts = append(parts, envHint)
+	}
+	return strings.Join(parts, "; ")
 }
 
 func choiceField(label string, choices []string, value string) field {
@@ -818,18 +894,24 @@ func (m *Model) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("callbell configuration") + "\n\n")
+	b.WriteString(titleStyle.Render("Callbell setup") + "\n")
+	path := "Config: " + m.store.Path()
+	if !m.configExists {
+		path += " (created on first save)"
+	}
+	b.WriteString(m.wrapped(hintStyle, path) + "\n\n")
 
 	switch m.screen {
 	case screenMenu:
+		b.WriteString(m.wrapped(activeStyle, "Next: "+m.nextStep()) + "\n\n")
 		for i := section(0); i < sectionCount; i++ {
-			b.WriteString(line(int(i) == m.cursor, i.title()) + "\n")
+			b.WriteString(m.row(int(i) == m.cursor, m.menuLine(i)) + "\n")
 		}
 		b.WriteString(m.hint("up/down move · enter open · q quit"))
 	case screenList:
 		b.WriteString(titleStyle.Render(m.section.title()) + "\n\n")
 		if len(m.names) == 0 {
-			b.WriteString(hintStyle.Render("nothing configured yet") + "\n")
+			b.WriteString(m.wrapped(hintStyle, m.emptyHelp()) + "\n")
 		}
 		for i, name := range m.names {
 			b.WriteString(m.row(i == m.cursor, m.describe(name)) + "\n")
@@ -860,9 +942,22 @@ func (m *Model) View() string {
 		}
 		keys := "tab move · left/right choose · enter save · esc cancel"
 		if m.fields[m.focus].kind == fieldSecret {
-			keys = "s store secret · p plaintext · x remove · " + keys
+			if m.editing == "" {
+				keys = "enter save credential first · tab move · esc cancel"
+			} else {
+				keys = "s system keyring · p unencrypted file (asks first) · x remove · " + keys
+			}
 		}
 		b.WriteString(m.hint(keys))
+	case screenPlaintextConfirm:
+		b.WriteString(titleStyle.Render("Store this secret unencrypted?") + "\n\n")
+		b.WriteString(m.wrapped(failStyle,
+			fmt.Sprintf("This does not use the system keyring. It writes %s.%s as readable text for your "+
+				"user account into %s.", m.editing, m.secretRole, m.plaintextPath())) + "\n")
+		b.WriteString(m.indented(
+			"Choose no if you want the keyring. Unlock or configure the system keyring, return here, and press s.") +
+			"\n")
+		b.WriteString(m.hint("y continue to masked input · n/esc cancel without writing"))
 	case screenSecret:
 		where := "the credential store of this machine"
 		if m.secretPlain {
@@ -903,6 +998,51 @@ func (m *Model) View() string {
 		b.WriteString("\n\n" + m.wrapped(hintStyle, m.status))
 	}
 	return b.String()
+}
+
+func (m *Model) menuLine(s section) string {
+	detail := [...]string{
+		"BookStack server URL",
+		"token ID and token secret",
+		"combine a service and credential",
+		"optional connection for knowledge commands",
+	}[s]
+	return fmt.Sprintf("%d. %s (%d) - %s", int(s)+1, s.title(), len(m.entryNames(s)), detail)
+}
+
+func (m *Model) nextStep() string {
+	switch {
+	case len(m.cfg.Services) == 0:
+		return "add a Service with your BookStack URL"
+	case len(m.cfg.Credentials) == 0:
+		return "add Credentials and store both parts of the BookStack API token"
+	case len(m.cfg.Connections) == 0:
+		return "add a Connection that combines the service and credentials"
+	case len(m.cfg.Defaults.Connections) == 0:
+		return "open Connections and press t to test; Defaults are optional"
+	default:
+		return "open Connections and press t to test BookStack"
+	}
+}
+
+func (m *Model) emptyHelp() string {
+	switch m.section {
+	case sectionServices:
+		return "No services yet. Press n to add the root URL of your BookStack server (without /api)."
+	case sectionCredentials:
+		return "No credentials yet. Press n to add the BookStack token ID and token secret."
+	case sectionConnections:
+		if reason := m.newEntryBlocked(); reason != "" {
+			return reason
+		}
+		return "No connections yet. Press n to combine a service and credential."
+	case sectionDefaults:
+		if reason := m.newEntryBlocked(); reason != "" {
+			return reason + " Defaults are optional."
+		}
+		return "No default yet. Press n to choose one, or leave this empty and select connections explicitly."
+	}
+	return "Nothing configured yet."
 }
 
 // wrapped fits a message into the terminal instead of leaving it to be cut off at the right edge.
@@ -959,20 +1099,40 @@ func (m *Model) indented(text string) string {
 // which is the actionable half of a missing secret and names no value.
 func (m *Model) fieldHint(f field) string {
 	if f.kind == fieldSecret {
+		if m.editing == "" {
+			var parts []string
+			if description := config.SecretRoleDescription(f.label); description != "" {
+				parts = append(parts, description)
+			}
+			if f.roleLead {
+				parts = append(parts,
+					"save this credential with enter first; you will stay here to add both secrets")
+			}
+			return strings.Join(parts, "; ")
+		}
 		return m.secretRowHint(m.editing, f.label, f.roleLead)
 	}
 	return f.hint
 }
 
-// testLine reports what the connection test is doing or found. It shows the stable class only.
+// testLine keeps the stable class visible and adds the next useful interpretation for a human.
 func (m *Model) testLine() string {
 	switch {
 	case m.testing:
-		return "\n" + hintStyle.Render(fmt.Sprintf("testing %s ... (esc cancels)", m.testName))
+		return "\n" + m.wrapped(hintStyle, fmt.Sprintf("testing %s ... (esc cancels)", m.testName))
 	case m.testClass == provider.ClassOK:
-		return "\n" + activeStyle.Render(fmt.Sprintf("%s: ok", m.testName))
+		return "\n" + m.wrapped(activeStyle,
+			fmt.Sprintf("%s: ok - BookStack accepted the connection", m.testName))
 	case m.testClass != "":
-		return "\n" + failStyle.Render(fmt.Sprintf("%s: %s", m.testName, m.testClass))
+		explanation := map[provider.Class]string{
+			provider.ClassUnreachable:   "the server did not answer; check the base URL and network",
+			provider.ClassTLS:           "the secure connection failed; check the server certificate and URL",
+			provider.ClassAuth:          "BookStack rejected the token or its user lacks permission",
+			provider.ClassRateLimited:   "BookStack is rate-limiting requests; wait and try again",
+			provider.ClassProviderError: "BookStack returned an unusable response; check the root URL and API access",
+		}[m.testClass]
+		return "\n" + m.wrapped(failStyle,
+			fmt.Sprintf("%s: %s - %s", m.testName, m.testClass, explanation))
 	}
 	return ""
 }

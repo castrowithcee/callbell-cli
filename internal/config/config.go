@@ -87,6 +87,14 @@ var providerSecretRoles = map[string][]string{
 	"bookstack": {"token-id", "token-secret"},
 }
 
+// secretRoleDescriptions explain provider terms at the point where a person has to supply them. They live
+// beside the provider schema so interfaces can stay free of provider-specific explanations.
+var secretRoleDescriptions = map[string]string{
+	"token-id": "BookStack token ID: the value labeled Token ID when you create an API token; " +
+		"it is not a name you choose",
+	"token-secret": "BookStack token secret: the value labeled Token Secret when you create the same API token",
+}
+
 // NotFoundError reports that no configuration file exists at the resolved path.
 type NotFoundError struct{ Path string }
 

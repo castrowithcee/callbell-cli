@@ -126,6 +126,24 @@ func TestUnavailableStoreFallsThrough(t *testing.T) {
 	}
 }
 
+func TestLockedStoreIsNamedPrecisely(t *testing.T) {
+	classified := classify(errors.New("Cannot create an item in a locked collection"))
+	if !errors.Is(classified, ErrLocked) || !errors.Is(classified, ErrUnavailable) {
+		t.Fatalf("classify() = %v, want locked and unavailable", classified)
+	}
+
+	r, store, _, _ := fixture(t, nil)
+	store.Fail(classified)
+	_, err := r.Resolve(credName, keyringCred(), role)
+	var missing *MissingSecretError
+	if !errors.As(err, &missing) {
+		t.Fatalf("Resolve() = %v, want MissingSecretError", err)
+	}
+	if got := strings.Join(missing.Checked, ", "); !strings.Contains(got, "credential store (locked)") {
+		t.Errorf("checked = %v, want the locked store named", missing.Checked)
+	}
+}
+
 // The fallback file is inert until it is switched on, and resolving never creates it.
 func TestPlaintextNeedsTheSwitch(t *testing.T) {
 	dir := t.TempDir()

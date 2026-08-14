@@ -64,6 +64,20 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSecretRoleDescriptionsExplainTheBookStackValues(t *testing.T) {
+	for role, want := range map[string]string{
+		"token-id":     "value labeled Token ID",
+		"token-secret": "value labeled Token Secret",
+	} {
+		if got := SecretRoleDescription(role); !strings.Contains(got, want) {
+			t.Errorf("SecretRoleDescription(%q) = %q, want it to contain %q", role, got, want)
+		}
+	}
+	if got := SecretRoleDescription("unknown"); got != "" {
+		t.Errorf("SecretRoleDescription(unknown) = %q, want empty", got)
+	}
+}
+
 // An empty configuration must round-trip to the same model as any other.
 func TestSaveAndLoadEmptyRoundTrip(t *testing.T) {
 	store, _ := newTarget(t)

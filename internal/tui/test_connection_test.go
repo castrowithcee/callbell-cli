@@ -13,6 +13,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // newTestableModel builds an editor with one configured connection and an injected tester.
@@ -45,12 +46,16 @@ func runTest(t *testing.T, m *Model) {
 
 // Every stable class reaches the editor unchanged.
 func TestConnectionTestClasses(t *testing.T) {
-	classes := []provider.Class{
-		provider.ClassOK, provider.ClassUnreachable, provider.ClassTLS,
-		provider.ClassAuth, provider.ClassRateLimited, provider.ClassProviderError,
+	classes := map[provider.Class]string{
+		provider.ClassOK:            "accepted the connection",
+		provider.ClassUnreachable:   "check the base URL and network",
+		provider.ClassTLS:           "check the server certificate and URL",
+		provider.ClassAuth:          "rejected the token or its user lacks permission",
+		provider.ClassRateLimited:   "wait and try again",
+		provider.ClassProviderError: "check the root URL and API access",
 	}
 
-	for _, want := range classes {
+	for want, explanation := range classes {
 		t.Run(string(want), func(t *testing.T) {
 			m := newTestableModel(t, func(context.Context, string) (provider.Class, error) {
 				return want, nil
@@ -65,11 +70,15 @@ func TestConnectionTestClasses(t *testing.T) {
 				t.Errorf("class = %q, want %q", m.testClass, want)
 			}
 			view := m.View()
+			words := strings.Join(strings.Fields(view), " ")
 			if !strings.Contains(view, string(want)) {
 				t.Errorf("view = %q, want it to show %q", view, want)
 			}
 			if !strings.Contains(view, "wiki") {
 				t.Errorf("view = %q, want it to name the connection", view)
+			}
+			if !strings.Contains(words, explanation) {
+				t.Errorf("view = %q, want it to explain %q", view, explanation)
 			}
 		})
 	}
@@ -203,6 +212,32 @@ func TestConnectionTestRedactsUnexpectedErrors(t *testing.T) {
 	}
 	if m.testClass != "" {
 		t.Errorf("class = %q, want none after a failure", m.testClass)
+	}
+}
+
+func TestConnectionTestExplainsAMissingKeyringSecretInEditorTerms(t *testing.T) {
+	m := newTestableModel(t, func(context.Context, string) (provider.Class, error) {
+		return "", &secret.MissingSecretError{
+			Credential: "wiki-reader",
+			Role:       "token-secret",
+			Type:       config.CredentialTypeKeyring,
+		}
+	}, nil)
+
+	runTest(t, m)
+
+	view := m.View()
+	words := strings.Join(strings.Fields(view), " ")
+	for _, want := range []string{
+		"Connection test could not run",
+		"open Credentials",
+		"select token-secret",
+		"press s",
+		"or p",
+	} {
+		if !strings.Contains(words, want) {
+			t.Errorf("missing-secret result does not contain %q:\n%s", want, view)
+		}
 	}
 }
 

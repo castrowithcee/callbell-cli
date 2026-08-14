@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,6 +134,11 @@ func within[T any](limit time.Duration, op func() (T, error)) (T, error) {
 // classify turns anything the platform reports into the one class the cascade acts on. The original text
 // is kept for diagnosis: it describes the service, never a stored value.
 func classify(err error) error {
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "locked collection") ||
+		strings.Contains(message, "failed to unlock correct collection") {
+		return fmt.Errorf("%w: %w", ErrUnavailable, ErrLocked)
+	}
 	return fmt.Errorf("%w: %v", ErrUnavailable, err)
 }
 

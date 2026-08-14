@@ -50,6 +50,10 @@ func SecretRoles() []string {
 	return sortedKeys(seen)
 }
 
+// SecretRoleDescription explains one provider-defined role without exposing a secret value. Unknown roles
+// have no description, so a future provider cannot accidentally inherit the meaning of another one.
+func SecretRoleDescription(role string) string { return secretRoleDescriptions[role] }
+
 // Providers returns the provider names a service may use, sorted.
 func Providers() []string { return sortedKeys(providerSecretRoles) }
 

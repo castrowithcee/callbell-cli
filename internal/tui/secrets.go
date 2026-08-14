@@ -203,6 +203,27 @@ func (m *Model) askSecret(role string, plaintext bool) {
 	m.clearMessages()
 }
 
+// confirmPlaintext separates curiosity about the p key from consent to write an unencrypted secret. The
+// confirmation itself writes nothing and does not even ask for the value.
+func (m *Model) confirmPlaintext(role string) {
+	m.secretRole = role
+	m.screen = screenPlaintextConfirm
+	m.clearMessages()
+}
+
+func (m *Model) updatePlaintextConfirm(key tea.KeyMsg) tea.Cmd {
+	switch key.String() {
+	case "y":
+		m.askSecret(m.secretRole, true)
+	case "n", "esc":
+		m.screen = screenForm
+		m.status = "Cancelled; nothing was written"
+	case "ctrl+c":
+		return m.quit()
+	}
+	return nil
+}
+
 // updateSecret handles the masked prompt.
 func (m *Model) updateSecret(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
@@ -291,9 +312,14 @@ func (m *Model) explain(err error, credential, role string) string {
 	switch {
 	case errors.Is(err, secret.ErrNoEntry):
 		return fmt.Sprintf("no stored secret for %s.%s", credential, role)
+	case errors.Is(err, secret.ErrLocked):
+		return "the system keyring is locked; unlock its login collection, then retry s. " +
+			"Only if you deliberately accept an unencrypted file, press p; it asks again before writing " +
+			m.plaintextPath()
 	case errors.Is(err, secret.ErrUnavailable), errors.Is(err, secret.ErrDisabled):
-		return fmt.Sprintf("%v; press p on the role to store it in %s instead, which stays a deliberate "+
-			"step and never happens by itself, or export %s",
+		return fmt.Sprintf("%v; the system keyring could not be used: unlock or configure it, then retry s. "+
+			"Only if you deliberately accept an unencrypted file, press p; it asks again before writing %s. "+
+			"Alternatively export %s",
 			err, m.plaintextPath(), secret.DerivedEnvName(credential, role))
 	}
 	return err.Error()
@@ -441,6 +467,9 @@ func (m *Model) storedSource(credential, role string) string {
 // foot of the form repeats the keys for whichever row the focus is on.
 func (m *Model) secretRowHint(credential, role string, lead bool) string {
 	var parts []string
+	if description := config.SecretRoleDescription(role); description != "" {
+		parts = append(parts, description)
+	}
 	if lead {
 		parts = append(parts, secretHint)
 	}
@@ -465,8 +494,10 @@ func (m *Model) secretRowKey(role string, key tea.KeyMsg) tea.Cmd {
 	}
 
 	switch action {
-	case "s", "p":
-		m.askSecret(role, action == "p")
+	case "s":
+		m.askSecret(role, false)
+	case "p":
+		m.confirmPlaintext(role)
 	case "x":
 		// Removing a stored secret is irreversible, so it is confirmed like every other deletion here.
 		m.confirmRole = role

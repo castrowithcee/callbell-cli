@@ -640,9 +640,15 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeEnv)
 	view := m.View()
+	words := strings.Join(strings.Fields(view), " ")
 	for _, want := range []string{"the NAME of an environment variable", "never the secret"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(words, want) {
 			t.Errorf("the credential form does not say %q:\n%s", want, view)
+		}
+	}
+	for _, want := range []string{"value labeled Token ID", "not a name you choose", "value labeled Token Secret"} {
+		if !strings.Contains(words, want) {
+			t.Errorf("the credential form does not explain %q:\n%s", want, view)
 		}
 	}
 	// The sentence is about the kind of row, so it stands once and speaks of every role row. A hint is
@@ -673,6 +679,10 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 		t.Errorf("the hints do not say what name and base url are for:\n%s", view)
 	}
 
+	m, _, _ = newModel(t)
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+	addCredential(t, m, "reader", "WIKI_ID", "WIKI_SECRET")
+	addConnection(t, m, "wiki", "wiki", "reader")
 	openSectionByName(t, m, sectionDefaults)
 	press(t, m, "n")
 	if view := m.View(); !strings.Contains(view, domainHint) {
@@ -738,8 +748,86 @@ func TestStartsWithoutAConfigurationFile(t *testing.T) {
 	if _, err := os.Stat(path); err == nil {
 		t.Error("a file was created before anything was saved")
 	}
-	if view := m.View(); !strings.Contains(view, "Services") {
-		t.Errorf("view = %q", view)
+	view := m.View()
+	for _, want := range []string{
+		"created on first save",
+		"Next: add a Service",
+		"1. Services",
+		"2. Credentials",
+		"3. Connections",
+		"4. Defaults",
+		path,
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("first-run view does not contain %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Loaded") {
+		t.Errorf("a missing file is described as loaded:\n%s", view)
+	}
+}
+
+func TestDependentSectionsExplainWhatMustBeCreatedFirst(t *testing.T) {
+	m, _, _ := newModel(t)
+
+	openSectionByName(t, m, sectionConnections)
+	view := m.View()
+	for _, want := range []string{"Create a service and a credential", "Press esc"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("empty Connections does not contain %q:\n%s", want, view)
+		}
+	}
+	press(t, m, "n")
+	if m.screen != screenList {
+		t.Fatalf("screen = %v, want to stay on the list without prerequisites", m.screen)
+	}
+	if !strings.Contains(m.fail, "Create a service and a credential") {
+		t.Errorf("error = %q", m.fail)
+	}
+
+	openSectionByName(t, m, sectionDefaults)
+	if view := m.View(); !strings.Contains(view, "Create a connection") ||
+		!strings.Contains(view, "Defaults are optional") {
+		t.Errorf("empty Defaults does not explain its prerequisite:\n%s", view)
+	}
+}
+
+func TestNewKeyringCredentialContinuesWithItsSecrets(t *testing.T) {
+	m, _, path := newModel(t)
+
+	openSectionByName(t, m, sectionCredentials)
+	press(t, m, "n")
+	typeText(t, m, "wiki-reader")
+	press(t, m, "tab")
+	selectChoice(t, m, config.CredentialTypeKeyring)
+	press(t, m, "tab")
+
+	before := m.View()
+	if !strings.Contains(before, "enter save credential first") {
+		t.Errorf("new credential does not explain the first save:\n%s", before)
+	}
+	if !strings.Contains(before, "value labeled Token ID") || !strings.Contains(before, "not a name you choose") {
+		t.Errorf("new credential does not explain token-id:\n%s", before)
+	}
+	press(t, m, "enter")
+
+	if m.screen != screenForm || m.editing != "wiki-reader" {
+		t.Fatalf("screen = %v editing = %q, want the saved credential form", m.screen, m.editing)
+	}
+	if m.fields[m.focus].kind != fieldSecret {
+		t.Fatalf("focused field kind = %v, want a secret role", m.fields[m.focus].kind)
+	}
+	view := strings.Join(strings.Fields(m.View()), " ")
+	for _, want := range []string{"Credential saved", "press s on each role", "p if the system credential store"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("continued credential form does not contain %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "created on first save") {
+		t.Errorf("the saved file is still described as not created:\n%s", view)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("first save did not create the configuration: %v", err)
 	}
 }
 
@@ -963,7 +1051,8 @@ func TestNoHintStandsTwice(t *testing.T) {
 	assertNoRepeatedHint(t, m, "the keyring credential form")
 
 	view := m.View()
-	if got := strings.Count(view, "store it in the plaintext file"); got != 1 {
+	words := strings.Join(strings.Fields(view), " ")
+	if got := strings.Count(words, "p unencrypted file (asks first)"); got != 1 {
 		t.Errorf("the secret keys stand %d times, want once:\n%s", got, view)
 	}
 	// The stages differ per role, so every role keeps its own.

@@ -110,6 +110,9 @@ var (
 	// ErrUnavailable reports that no credential store could be reached, for example because no secret
 	// service is running.
 	ErrUnavailable = errors.New("the credential store is unavailable")
+	// ErrLocked reports a reachable system credential store whose collection still needs the user's local
+	// login password. It also wraps ErrUnavailable because the current operation still cannot use it.
+	ErrLocked = errors.New("the credential store is locked")
 	// ErrDisabled reports that the system credential store was switched off deliberately.
 	ErrDisabled = errors.New("the credential store is switched off")
 	// ErrTimedOut reports a store that did not answer inside the deadline. It always accompanies
@@ -229,6 +232,8 @@ func (r *Resolver) Resolve(credential string, cred config.Credential, role strin
 		checked = append(checked, stage(SourceStore, "switched off"))
 	case errors.Is(err, ErrTimedOut):
 		checked = append(checked, stage(SourceStore, "timed out"))
+	case errors.Is(err, ErrLocked):
+		checked = append(checked, stage(SourceStore, "locked"))
 	default:
 		// A machine without a running secret service must not be a dead end, so an unreachable store is
 		// one more stage that did not deliver rather than a failure.

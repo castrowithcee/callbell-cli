@@ -51,6 +51,12 @@ func setSecret(t *testing.T, m *Model, role, value string, plaintext bool) {
 		key = "p"
 	}
 	press(t, m, key)
+	if plaintext {
+		if m.screen != screenPlaintextConfirm {
+			t.Fatalf("p did not open the plaintext confirmation: screen %v, error %q", m.screen, m.fail)
+		}
+		press(t, m, "y")
+	}
 	if m.screen != screenSecret {
 		t.Fatalf("%q did not open the prompt: screen %v, error %q", key, m.screen, m.fail)
 	}
@@ -373,8 +379,8 @@ func TestCancellingThePromptStoresNothing(t *testing.T) {
 	}
 }
 
-// A machine without a running secret service is not a dead end: the editor names the plaintext file as the
-// deliberate way out, and takes it when the user asks for it.
+// A machine without a running secret service names the keyring as the primary fix. Plaintext remains an
+// explicitly confirmed way out, never an automatic or equivalent recommendation.
 func TestPlaintextIsTheNamedWayOutWithoutAStore(t *testing.T) {
 	const canary = "canary-plaintext-2c9a"
 
@@ -385,8 +391,10 @@ func TestPlaintextIsTheNamedWayOutWithoutAStore(t *testing.T) {
 	editEntry(t, m, "reader")
 	setSecret(t, m, "token-id", canary, false)
 
-	if !strings.Contains(m.fail, "press p") {
-		t.Fatalf("error = %q, want it to name the way out", m.fail)
+	for _, want := range []string{"unlock or configure", "retry s", "deliberately accept an unencrypted file"} {
+		if !strings.Contains(m.fail, want) {
+			t.Fatalf("error = %q, want it to contain %q", m.fail, want)
+		}
 	}
 	if !strings.Contains(m.fail, secret.FileName) {
 		t.Errorf("error = %q, want it to name the file", m.fail)
@@ -409,6 +417,42 @@ func TestPlaintextIsTheNamedWayOutWithoutAStore(t *testing.T) {
 	}
 	if view := m.View(); !strings.Contains(view, string(secret.SourcePlaintext)) {
 		t.Errorf("the form does not say the fallback delivers:\n%s", view)
+	}
+}
+
+func TestPlaintextNeedsAWarningAndConfirmationBeforeInput(t *testing.T) {
+	m, _, path, _, _ := newStoreModel(t)
+	addKeyringCredential(t, m, "reader")
+	editEntry(t, m, "reader")
+	focusRole(t, m, "token-id")
+
+	press(t, m, "p")
+	if m.screen != screenPlaintextConfirm {
+		t.Fatalf("screen = %v, want plaintext confirmation", m.screen)
+	}
+	view := strings.Join(strings.Fields(m.View()), " ")
+	for _, want := range []string{
+		"does not use the system keyring",
+		"readable text",
+		"press s",
+		"cancel without writing",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("confirmation does not contain %q:\n%s", want, m.View())
+		}
+	}
+	press(t, m, "n")
+	if m.screen != screenForm || m.status != "Cancelled; nothing was written" {
+		t.Errorf("cancel left screen %v with status %q", m.screen, m.status)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), secret.FileName)); !os.IsNotExist(err) {
+		t.Errorf("pressing p and cancelling created a plaintext file: %v", err)
+	}
+
+	press(t, m, "p", "y")
+	if m.screen != screenSecret || !m.secretPlain {
+		t.Errorf("confirmed plaintext did not open its masked prompt: screen %v plaintext %v",
+			m.screen, m.secretPlain)
 	}
 }
 
