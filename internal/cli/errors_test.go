@@ -76,6 +76,7 @@ func TestErrorsAreRedacted(t *testing.T) {
 // An agent-mode failure carries a machine-readable code and no prose.
 func TestAgentErrorIsMachineReadable(t *testing.T) {
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 
 	var stdout, stderr bytes.Buffer
 	opts := &Options{}

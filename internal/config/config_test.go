@@ -210,10 +210,19 @@ func TestValidateReportsAllProblems(t *testing.T) {
 
 func TestPathPriority(t *testing.T) {
 	home := t.TempDir()
+	cliHome := t.TempDir()
+
+	// setPathEnv pins every input of Path so no value leaks in from the caller's environment.
+	setPathEnv := func(t *testing.T, configFile, cliHomeDir string) {
+		t.Helper()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+		t.Setenv("CALLBELL_CONFIG", configFile)
+		t.Setenv("CALLBELL_CLI_HOME", cliHomeDir)
+	}
 
 	t.Run("explicit flag wins", func(t *testing.T) {
-		t.Setenv("CALLBELL_CONFIG", "/from/env.yaml")
-		t.Setenv("XDG_CONFIG_HOME", home)
+		setPathEnv(t, "/from/env.yaml", cliHome)
 
 		got, err := Path("/from/flag.yaml")
 
@@ -222,9 +231,8 @@ func TestPathPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("environment wins over the default location", func(t *testing.T) {
-		t.Setenv("CALLBELL_CONFIG", "/from/env.yaml")
-		t.Setenv("XDG_CONFIG_HOME", home)
+	t.Run("CALLBELL_CONFIG wins over CALLBELL_CLI_HOME", func(t *testing.T) {
+		setPathEnv(t, "/from/env.yaml", cliHome)
 
 		got, err := Path("")
 
@@ -233,13 +241,23 @@ func TestPathPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("default location", func(t *testing.T) {
-		t.Setenv("CALLBELL_CONFIG", "")
-		t.Setenv("XDG_CONFIG_HOME", home)
+	t.Run("CALLBELL_CLI_HOME wins over the default location", func(t *testing.T) {
+		setPathEnv(t, "", cliHome)
 
 		got, err := Path("")
 
-		want := filepath.Join(home, "callbell", "config.yaml")
+		want := filepath.Join(cliHome, "config.yaml")
+		if err != nil || got != want {
+			t.Errorf("Path() = %q, %v, want %q", got, err, want)
+		}
+	})
+
+	t.Run("default location", func(t *testing.T) {
+		setPathEnv(t, "", "")
+
+		got, err := Path("")
+
+		want := filepath.Join(home, ".callbell", "cli", "config.yaml")
 		if err != nil || got != want {
 			t.Errorf("Path() = %q, %v, want %q", got, err, want)
 		}

@@ -89,8 +89,9 @@ func (e *InvalidError) Error() string { return fmt.Sprintf("%s: %v", e.Path, e.E
 
 func (e *InvalidError) Unwrap() error { return e.Err }
 
-// Path returns the configuration file to use. An explicit path wins, then CALLBELL_CONFIG, then
-// <user config dir>/callbell/config.yaml.
+// Path returns the configuration file to use. An explicit path wins, then the file named by
+// CALLBELL_CONFIG, then config.yaml inside the directory named by CALLBELL_CLI_HOME, then
+// ~/.callbell/cli/config.yaml.
 func Path(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
@@ -98,11 +99,14 @@ func Path(explicit string) (string, error) {
 	if p := os.Getenv("CALLBELL_CONFIG"); p != "" {
 		return p, nil
 	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine the user configuration directory: %w", err)
+	if dir := os.Getenv("CALLBELL_CLI_HOME"); dir != "" {
+		return filepath.Join(dir, "config.yaml"), nil
 	}
-	return filepath.Join(dir, "callbell", "config.yaml"), nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine the user home directory: %w", err)
+	}
+	return filepath.Join(home, ".callbell", "cli", "config.yaml"), nil
 }
 
 // Load reads and validates the configuration at path.

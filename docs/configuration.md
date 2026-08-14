@@ -4,11 +4,12 @@ Callbell CLI reads one YAML file. A ready-to-edit example is [`examples/config.y
 
 ## Where the file comes from
 
-The first of these that is set wins:
+The first of these that applies wins:
 
 1. `--config <path>`
-2. the `CALLBELL_CONFIG` environment variable
-3. `$XDG_CONFIG_HOME/callbell/config.yaml`, which is `~/.config/callbell/config.yaml` by default
+2. the `CALLBELL_CONFIG` environment variable, which names the file itself
+3. the `CALLBELL_CLI_HOME` environment variable, which names a directory holding `config.yaml`
+4. `~/.callbell/cli/config.yaml`, the default on every platform
 
 Commands that need no configuration work without a file. A command that needs a connection reports a usage
 error when the file is missing.

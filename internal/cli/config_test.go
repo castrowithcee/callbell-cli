@@ -44,6 +44,7 @@ func writeConfig(t *testing.T, content string) string {
 func TestConfigValidate(t *testing.T) {
 	// The command must not fall back to the developer's own configuration.
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 
 	valid := writeConfig(t, validConfig)
 	broken := writeConfig(t, "version: 1\nservices:\n  wiki:\n    provider: confluence\n    base_url: x\n")
@@ -82,6 +83,7 @@ func TestConfigValidate(t *testing.T) {
 // Validation is deterministic: it reads only the file and reports problems in a stable order.
 func TestConfigValidateIsDeterministic(t *testing.T) {
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 	path := writeConfig(t, "version: 9\nservices:\n  b:\n    provider: nope\n    base_url: x\n  a:\n    provider: nope\n    base_url: y\n")
 
 	run := func() string {

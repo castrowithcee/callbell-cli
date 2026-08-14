@@ -46,6 +46,7 @@ func runDiscovery(t *testing.T, args ...string) (int, string, string) {
 
 func TestCapabilitiesCommand(t *testing.T) {
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 	cfg := writeConfig(t, validConfig)
 
 	t.Run("union of all configured connections", func(t *testing.T) {
@@ -197,6 +198,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 
 func TestDescribeCommand(t *testing.T) {
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 	cfg := writeConfig(t, validConfig)
 
 	t.Run("full contract", func(t *testing.T) {

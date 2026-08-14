@@ -1,6 +1,6 @@
 # Example callbell configuration.
 #
-# Copy this file to ~/.config/callbell/config.yaml and replace the placeholders. It contains no real
+# Copy this file to ~/.callbell/cli/config.yaml and replace the placeholders. It contains no real
 # endpoints and no secrets: a credential names the environment variables that carry the secrets, never
 # their values.
 #

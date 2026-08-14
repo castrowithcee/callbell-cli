@@ -19,6 +19,7 @@ const (
 func bookstackConfig(t *testing.T, baseURL string) string {
 	t.Helper()
 	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
 	t.Setenv("TEST_TOKEN_ID", canaryID)
 	t.Setenv("TEST_TOKEN_SECRET", canarySecret)
 
