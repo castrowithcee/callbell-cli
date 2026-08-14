@@ -1,0 +1,30 @@
+# Build output
+/callbell
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and profiling output
+*.test
+*.out
+coverage.*
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local environment
+.env
+.env.local
+
+# Editors and tooling
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS artifacts
+.DS_Store
+Thumbs.db

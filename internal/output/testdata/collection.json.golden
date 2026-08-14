@@ -1,0 +1,1 @@
+[{"name":"alpha|beta","note":"back\\slash","count":3,"active":true,"ratio":1.5,"empty":""},{"name":"line1\nline2","note":"carriage\rreturn","count":0,"active":false,"ratio":0,"empty":null},{"name":"key=value","note":null,"count":-7,"active":true,"ratio":2.25,"empty":"x"}]

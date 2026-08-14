@@ -1,0 +1,43 @@
+version: 1
+
+# Two services of the same provider: two separate BookStack instances.
+services:
+  wiki-primary:
+    provider: bookstack
+    base_url: https://wiki.example.invalid
+  wiki-archive:
+    provider: bookstack
+    base_url: https://archive.example.invalid
+    options:
+      page_size: "50"
+
+# Credentials name environment variables, never secret values.
+credentials:
+  wiki-reader:
+    type: env
+    values:
+      token-id: CALLBELL_WIKI_READER_TOKEN_ID
+      token-secret: CALLBELL_WIKI_READER_TOKEN_SECRET
+  wiki-auditor:
+    type: env
+    values:
+      token-id: CALLBELL_WIKI_AUDITOR_TOKEN_ID
+      token-secret: CALLBELL_WIKI_AUDITOR_TOKEN_SECRET
+
+# wiki and wiki-audit are two access contexts on the same service with different keys.
+# archive reuses the wiki-reader credential on a different service.
+connections:
+  wiki:
+    service: wiki-primary
+    credential: wiki-reader
+  wiki-audit:
+    service: wiki-primary
+    credential: wiki-auditor
+  archive:
+    service: wiki-archive
+    credential: wiki-reader
+    target: books
+
+defaults:
+  connections:
+    knowledge: wiki

@@ -1,0 +1,4 @@
+name|note|count|active|ratio|empty
+alpha\|beta|back\\slash|3|true|1.5|
+line1\nline2|carriage\rreturn|0|false|0|
+key=value||-7|true|2.25|x

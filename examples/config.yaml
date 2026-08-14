@@ -1,0 +1,58 @@
+# Example callbell configuration.
+#
+# Copy this file to ~/.config/callbell/config.yaml and replace the placeholders. It contains no real
+# endpoints and no secrets: a credential names the environment variables that carry the secrets, never
+# their values.
+#
+# Check your edits with: callbell config validate
+
+version: 1
+
+# A service is one technical API endpoint of one provider.
+services:
+  wiki-primary:
+    provider: bookstack
+    base_url: https://wiki.example.invalid
+
+  # A second instance of the same provider needs no duplication beyond its own endpoint.
+  wiki-archive:
+    provider: bookstack
+    base_url: https://archive.example.invalid
+    options:
+      page_size: "50"
+
+# A credential only points at environment variables. BookStack needs the roles token-id and token-secret.
+credentials:
+  wiki-reader:
+    type: env
+    values:
+      token-id: CALLBELL_WIKI_READER_TOKEN_ID
+      token-secret: CALLBELL_WIKI_READER_TOKEN_SECRET
+
+  wiki-auditor:
+    type: env
+    values:
+      token-id: CALLBELL_WIKI_AUDITOR_TOKEN_ID
+      token-secret: CALLBELL_WIKI_AUDITOR_TOKEN_SECRET
+
+# A connection is what you select with --connection. It binds one service to one credential.
+connections:
+  wiki:
+    service: wiki-primary
+    credential: wiki-reader
+
+  # The same service with a different key, for example a more restricted account.
+  wiki-audit:
+    service: wiki-primary
+    credential: wiki-auditor
+
+  # A different service reusing the same credential, optionally scoped with target.
+  archive:
+    service: wiki-archive
+    credential: wiki-reader
+    target: books
+
+# Which connection a domain uses when --connection is not given.
+defaults:
+  connections:
+    knowledge: wiki
