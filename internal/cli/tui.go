@@ -18,9 +18,9 @@ func newTUICommand(opts *Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "tui",
 		Short: "Edit the configuration in a terminal interface",
-		Long: "The editor manages services, credentials, connections, and domain defaults, and can test a\n" +
-			"selected connection. It never asks for or displays secret values: a credential names\n" +
-			"environment variables, and the editor only shows whether a named variable is set.",
+		Long: "The editor manages services, credentials, connections, and domain defaults, can test a\n" +
+			"selected connection, and stores the secrets of a keyring credential in a masked field. It\n" +
+			"never displays a stored secret back: what it shows is which source delivers a role.",
 		Args: noArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if opts.Agent {
@@ -30,8 +30,15 @@ func newTUICommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The editor resolves secrets through the same cascade every command uses; it owns no
+			// resolution path of its own.
+			secrets, err := opts.resolver()
+			if err != nil {
+				return err
+			}
 			store := config.NewStore(path)
-			return classifyUserError(tui.Run(store, connectionTester(store, opts), opts.Redactor, os.Stdin, os.Stdout))
+			return classifyUserError(tui.Run(
+				store, connectionTester(store, opts), secrets, opts.Redactor, os.Stdin, os.Stdout))
 		},
 	}
 }

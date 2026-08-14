@@ -520,6 +520,9 @@ func TestStoreSelector(t *testing.T) {
 // The store selector switches the store off without reaching for it.
 func TestStoreSelectorNone(t *testing.T) {
 	t.Setenv(StoreSelector, "none")
+	// This resolver reads the real process environment, so the derived variable is pinned to empty: what
+	// happens to be exported where the suite runs must not decide which stage delivers here.
+	t.Setenv(DerivedEnvName(credName, role), "")
 	r, err := New(t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
@@ -698,6 +701,137 @@ func TestStoreDeadline(t *testing.T) {
 		}
 		if len(got.Checked) != 2 || !strings.Contains(got.Checked[1], "timed out") {
 			t.Errorf("checked = %v, want the timeout named", got.Checked)
+		}
+	})
+}
+
+// Stored answers a different question than the cascade: not what would be delivered, but what lies
+// somewhere and would be left behind. Every case here is one where the cascade reports nothing while
+// something is stored or a place could not be asked at all.
+func TestStoredAsksThePlacesNotTheCascade(t *testing.T) {
+	derived := DerivedEnvName(credName, role)
+
+	t.Run("an environment variable is not a place that keeps anything", func(t *testing.T) {
+		r, _, _, _ := fixture(t, map[string]string{derived: canaryEnv})
+
+		got := r.Stored(credName, role)
+
+		if !got.Settled() || len(got.Holding) != 0 {
+			t.Errorf("Stored() = %+v, want nothing held and everything settled", got)
+		}
+	})
+
+	t.Run("a variable does not hide what the store keeps", func(t *testing.T) {
+		r, store, _, _ := fixture(t, map[string]string{derived: canaryEnv})
+		if err := store.Set(StoreKey(credName, role), canaryStore); err != nil {
+			t.Fatalf("Set() = %v", err)
+		}
+		// The cascade stops at stage one and never looks further.
+		if source, _ := r.Status(credName, keyringCred(), role); source != SourceEnv {
+			t.Fatalf("Status() = %q, want the variable to win", source)
+		}
+
+		got := r.Stored(credName, role)
+
+		if len(got.Holding) != 1 || got.Holding[0] != SourceStore {
+			t.Errorf("Stored() = %+v, want the credential store to be named", got)
+		}
+		if !got.Settled() {
+			t.Errorf("Stored() = %+v, want a settled answer", got)
+		}
+	})
+
+	t.Run("a switched-off store is unknown, not empty", func(t *testing.T) {
+		r := NewWith(nil, nil, NewFile(filepath.Join(t.TempDir(), FileName)), nil)
+
+		got := r.Stored(credName, role)
+
+		if got.Settled() || len(got.Unknown) != 1 || got.Unknown[0] != SourceStore {
+			t.Errorf("Stored() = %+v, want the store reported as unasked", got)
+		}
+		if got.Err == nil || !errors.Is(got.Err, ErrDisabled) {
+			t.Errorf("Err = %v, want it to say the store is switched off", got.Err)
+		}
+	})
+
+	t.Run("an unreachable store is unknown, not empty", func(t *testing.T) {
+		r, store, _, _ := fixture(t, nil)
+		store.Fail(ErrUnavailable)
+
+		got := r.Stored(credName, role)
+
+		if got.Settled() || len(got.Unknown) != 1 || got.Unknown[0] != SourceStore {
+			t.Errorf("Stored() = %+v, want the store reported as unasked", got)
+		}
+	})
+
+	t.Run("a fallback file that cannot be read is unknown, not empty", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("the mode check does not apply on this platform")
+		}
+		r, _, file, _ := fixture(t, nil)
+		if err := file.Set(credName, role, canaryPlaintext); err != nil {
+			t.Fatalf("Set() = %v", err)
+		}
+		if err := os.Chmod(file.Path(), 0o644); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		got := r.Stored(credName, role)
+
+		if got.Settled() || len(got.Unknown) != 1 || got.Unknown[0] != SourcePlaintext {
+			t.Errorf("Stored() = %+v, want the file reported as unasked", got)
+		}
+		var tooOpen *PermissionError
+		if !errors.As(got.Err, &tooOpen) {
+			t.Errorf("Err = %v, want the mode refusal with its fix", got.Err)
+		}
+	})
+
+	t.Run("a fallback that was never switched on still holds what is in it", func(t *testing.T) {
+		r, _, file, _ := fixture(t, nil)
+		if err := file.Set(credName, role, canaryPlaintext); err != nil {
+			t.Fatalf("Set() = %v", err)
+		}
+		// Switching the fallback off makes it deliver nothing, but the secret is still on disk.
+		body, err := os.ReadFile(file.Path())
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		off := strings.Replace(string(body), "allow_plaintext: true", "allow_plaintext: false", 1)
+		if err := os.WriteFile(file.Path(), []byte(off), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if source, _ := r.Status(credName, keyringCred(), role); source != SourceMissing {
+			t.Fatalf("Status() = %q, want an inert file to deliver nothing", source)
+		}
+
+		got := r.Stored(credName, role)
+
+		if len(got.Holding) != 1 || got.Holding[0] != SourcePlaintext {
+			t.Errorf("Stored() = %+v, want the copy on disk to be named", got)
+		}
+	})
+
+	t.Run("nothing anywhere is settled and empty", func(t *testing.T) {
+		r, _, _, _ := fixture(t, nil)
+
+		got := r.Stored(credName, role)
+
+		if !got.Settled() || len(got.Holding) != 0 || got.Err != nil {
+			t.Errorf("Stored() = %+v, want a settled empty answer", got)
+		}
+	})
+
+	t.Run("an absent fallback file is not an unreadable one", func(t *testing.T) {
+		r, _, _, _ := fixture(t, nil)
+
+		got := r.Stored(credName, role)
+
+		for _, source := range got.Unknown {
+			if source == SourcePlaintext {
+				t.Errorf("Stored() = %+v, want a missing file to count as empty", got)
+			}
 		}
 	})
 }

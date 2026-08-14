@@ -162,6 +162,17 @@ callbell credential delete wiki-reader token-id
 The secret is read from standard input, so it never reaches the command line or the shell history. No
 command ever shows a stored secret back.
 
+The same entries are managed in `callbell tui`: open Credentials, open the keyring credential, and press
+`s` on a role to type the secret into a masked field, `p` to write it to the plaintext fallback instead, or
+`x` to remove it. Each role shows the source that delivers it, never a value. That is the whole setup
+without leaving the editor, which a shell command cannot offer: a child process cannot export a variable
+into the shell that started it.
+
+Turning such a credential back into `type: env` is refused there while a secret of it still sits in the
+store or in the fallback file, and equally while one of those places cannot be asked at all — a switched-off
+store answers nothing, and a copy left behind would have nothing that reads it. Remove the secrets first,
+with `x` on the role or with `callbell credential delete`, and change the type after that.
+
 `delete` clears the credential store and the plaintext fallback together. It reports success only when no
 place kept an entry back: if one of them could not be cleared, the command says which one still holds the
 secret, what was already removed, and how to fix it. A half-done delete is never reported as done.
@@ -187,6 +198,16 @@ This writes `credentials.yaml` next to `config.yaml`, with mode `0600` and `allo
 Both are required for the file to be read, so a leftover file cannot deliver a secret by accident, and
 without `--plaintext` the file is never created at all: `callbell credential set` fails and names this
 option instead of falling back quietly.
+
+The switch decides what the file **delivers**, not what can be done with it. A file with
+`allow_plaintext: false` hands out nothing, and `callbell credential delete` still removes an entry from it,
+while `callbell credential set --plaintext` keeps every entry it already holds. Otherwise a secret in clear
+text could sit in a file that reports it as present and refuses to let go of it.
+
+Writing does switch the file back on, though, and that applies to every entry in it, not only the new one:
+entries that were parked in a switched-off file start delivering again. Switching the file off is therefore
+a pause, not an archive. Remove what should stay gone with `callbell credential delete`, which works
+whichever way the switch stands.
 
 The mode is enforced, not just written. A fallback that anyone but its owner can read or write is refused,
 the way `ssh` refuses a private key that is too open, and the message names the fix:

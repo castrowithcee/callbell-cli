@@ -18,9 +18,11 @@ import (
 // newTestableModel builds an editor with one configured connection and an injected tester.
 func newTestableModel(t *testing.T, tester Tester, red *redact.Redactor) *Model {
 	t.Helper()
-	store := config.NewStore(filepath.Join(t.TempDir(), "callbell", "config.yaml"))
+	dir := filepath.Join(t.TempDir(), "callbell")
+	store := config.NewStore(filepath.Join(dir, "config.yaml"))
+	secrets, _ := newResolver(t, dir, nil)
 
-	m, err := New(store, tester, red)
+	m, err := New(store, tester, secrets, red)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
@@ -219,10 +221,12 @@ func TestConnectionTestGuards(t *testing.T) {
 	})
 
 	t.Run("an empty list produces no command", func(t *testing.T) {
-		store := config.NewStore(filepath.Join(t.TempDir(), "callbell", "config.yaml"))
+		dir := filepath.Join(t.TempDir(), "callbell")
+		store := config.NewStore(filepath.Join(dir, "config.yaml"))
+		secrets, _ := newResolver(t, dir, nil)
 		m, err := New(store, func(context.Context, string) (provider.Class, error) {
 			return provider.ClassOK, nil
-		}, nil)
+		}, secrets, nil)
 		if err != nil {
 			t.Fatalf("New() = %v", err)
 		}

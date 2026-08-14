@@ -159,14 +159,16 @@ func checkKeyringRole(opts *Options, name, role string) error {
 }
 
 // readSecret reads the secret from standard input. A terminal is refused: typing a secret there would echo
-// it and leave it on the screen, and there is a masked field in the editor for that case.
+// it and leave it on the screen. The editor has a masked field for that case, and the message names the way
+// to it, because a user sent to an editor without a route types the secret into the first field that looks
+// like it takes one.
 func readSecret(c *cobra.Command) (string, error) {
 	in := c.InOrStdin()
 	if f, ok := in.(*os.File); ok {
 		info, err := f.Stat()
 		if err == nil && info.Mode()&os.ModeCharDevice != 0 {
-			return "", &UsageError{errors.New("the secret is read from standard input: pipe it in, " +
-				"or use the masked field in 'callbell tui'")}
+			return "", &UsageError{errors.New("the secret is read from standard input: pipe it in, or open " +
+				"'callbell tui', go to Credentials, open the keyring credential, and press s on the role")}
 		}
 	}
 

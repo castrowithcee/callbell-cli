@@ -68,8 +68,12 @@ func (f *File) Get(credential, role string) (string, error) {
 }
 
 // Set stores a secret and switches the fallback on. This is the only place the file is created.
+//
+// It reads what is on disk, not what may be delivered. Reading through the switch would hand back an empty
+// file whenever the fallback was off, and writing that back would drop every entry the file already had:
+// silent loss of secrets, at the one place in this project where they sit in clear text.
 func (f *File) Set(credential, role, value string) error {
-	c, err := f.read()
+	c, err := f.load()
 	if err != nil && !errors.Is(err, ErrDisabled) && !errors.Is(err, ErrNoEntry) {
 		return err
 	}
@@ -87,10 +91,16 @@ func (f *File) Set(credential, role, value string) error {
 
 // Delete removes a secret. When the last entry is gone the file is removed as well, so no switched-on
 // plaintext file stays behind without a reason to exist.
+//
+// Like Set it reads what is on disk. The switch decides whether a file delivers a secret; it must not
+// decide whether one can be cleaned up. An entry nobody wants read any more is exactly the entry that has
+// to be removable, and Holds reports it, so refusing to delete it would leave a copy that is named as
+// present and cannot be got rid of. The switch itself is left as it stands: deleting neither turns the
+// fallback on nor off.
 func (f *File) Delete(credential, role string) error {
-	c, err := f.read()
+	c, err := f.load()
 	if err != nil {
-		// An absent or inert file simply holds nothing to delete.
+		// An absent or empty file simply holds nothing to delete.
 		if errors.Is(err, ErrDisabled) {
 			return ErrNoEntry
 		}
@@ -142,9 +152,43 @@ func checkMode(path string, info fs.FileInfo) error {
 	return nil
 }
 
-// read returns the file content. An absent file and a file that was never switched on are the same thing
-// to a reader: ErrDisabled.
+// Holds reports whether the file keeps an entry for the pair, whether or not the fallback is switched on.
+//
+// It is a different question from Get. Get asks what may be delivered, and an inert file delivers nothing;
+// Holds asks what lies on disk, because a copy of a secret in a file nobody reads is still a copy of that
+// secret. A file that cannot be read at all is neither: that is an error, and the caller has to treat it as
+// "cannot tell" rather than as "nothing there".
+func (f *File) Holds(credential, role string) (bool, error) {
+	c, err := f.load()
+	switch {
+	case errors.Is(err, ErrDisabled):
+		// An absent and an empty file both hold nothing; there is no uncertainty in either.
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return c.Credentials[credential][role] != "", nil
+}
+
+// read returns the file content for delivery, and is used by Get alone.
+//
+// It is the answer to "what may this file hand out": an absent file and a file that was never switched on
+// are the same thing to a reader, ErrDisabled. Every operation that manages the content rather than
+// delivering it goes through load instead, because the switch must not decide what is on disk.
 func (f *File) read() (content, error) {
+	c, err := f.load()
+	if err != nil {
+		return content{}, err
+	}
+	if !c.AllowPlaintext {
+		return content{}, ErrDisabled
+	}
+	return c, nil
+}
+
+// load returns what is on disk, without asking whether the fallback was switched on. An absent or empty
+// file reports ErrDisabled: there is nothing there to talk about.
+func (f *File) load() (content, error) {
 	info, err := os.Stat(f.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -174,9 +218,6 @@ func (f *File) read() (content, error) {
 		}
 		// The message names the file, never a line of it: every line may be a secret.
 		return content{}, fmt.Errorf("cannot read %s: the file is not a valid credential fallback", f.path)
-	}
-	if !c.AllowPlaintext {
-		return content{}, ErrDisabled
 	}
 	return c, nil
 }

@@ -279,6 +279,65 @@ func (r *Resolver) Status(credential string, cred config.Credential, role string
 	return value.Source, value.Checked
 }
 
+// Placement reports where a copy of one secret lies, and which places could not be asked at all. It is the
+// answer to a different question than the cascade gives: not "what would be delivered now", but "what is
+// stored somewhere and would be left behind".
+//
+// Holding and Unknown are kept apart because they call for opposite reactions. A place that answered and
+// holds nothing is settled. A place that could not be asked may hold anything, so a caller that is about to
+// make a stored secret unreachable has to stop rather than assume the best.
+type Placement struct {
+	Holding []Source
+	Unknown []Source
+	// Err carries what each unreachable place said, in the order of Unknown. It names files, modes and
+	// switches, never a stored value.
+	Err error
+}
+
+// Settled reports whether every place could be asked, so Holding is the whole truth.
+func (p Placement) Settled() bool { return len(p.Unknown) == 0 }
+
+// Stored reports which places keep an entry for one (credential, role) pair.
+//
+// The environment is deliberately not consulted. A variable lives in the user's shell, it is not something
+// this program stored, and it orphans nothing when a credential stops reading it; counting it would let a
+// set variable hide a secret that really does sit in the store. That is exactly why this question cannot be
+// answered with the cascade: the cascade stops at the first stage that delivers, and stage one is the
+// environment.
+//
+// The value that comes back from a store is discarded. It is read because asking whether an entry exists is
+// the only question a credential store answers.
+func (r *Resolver) Stored(credential, role string) Placement {
+	var p Placement
+	var causes []error
+
+	switch value, err := r.store.Get(StoreKey(credential, role)); {
+	case err == nil && value != "":
+		p.Holding = append(p.Holding, SourceStore)
+	case err == nil, errors.Is(err, ErrNoEntry):
+		// The store answered and holds nothing.
+	default:
+		// Switched off, unreachable, timed out: all of them leave the question open. A store that was
+		// skipped is not a store that is empty.
+		p.Unknown = append(p.Unknown, SourceStore)
+		causes = append(causes, err)
+	}
+
+	// A resolver without a fallback file has no such file to leave anything behind in.
+	if r.plaintext != nil {
+		switch holds, err := r.plaintext.Holds(credential, role); {
+		case err != nil:
+			p.Unknown = append(p.Unknown, SourcePlaintext)
+			causes = append(causes, err)
+		case holds:
+			p.Holding = append(p.Holding, SourcePlaintext)
+		}
+	}
+
+	p.Err = errors.Join(causes...)
+	return p
+}
+
 // Set stores a secret for one (credential, role) pair in the system credential store. It never writes the
 // plaintext fallback: that needs SetPlaintext and therefore an explicit decision.
 func (r *Resolver) Set(credential, role, value string) error {

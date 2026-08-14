@@ -2,8 +2,9 @@
 // configuration core: it holds no schema knowledge, no provider knowledge, and no validation of its own,
 // and it saves only through the validating, atomic store.
 //
-// Secret values are never entered, held, or shown here. A credential names environment variables; the
-// editor shows only whether a named variable is set.
+// A secret is taken in here and handed straight to package secret, which owns the one resolution path. It
+// is typed masked, it is never shown, never read back, and never written to the configuration. What the
+// editor displays about a secret is where it resolves from, never what it is.
 package tui
 
 import (
@@ -21,6 +22,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // Tester checks one configured connection and reports the stable outcome class. The editor holds no
@@ -55,6 +57,7 @@ const (
 	screenList
 	screenForm
 	screenConfirm
+	screenSecret
 )
 
 type fieldKind int
@@ -62,7 +65,11 @@ type fieldKind int
 const (
 	fieldText fieldKind = iota
 	fieldChoice
+	// fieldEnvName holds the NAME of an environment variable, for a credential of type env.
 	fieldEnvName
+	// fieldSecret is the row of one role of a keyring credential. It holds no value at all: it shows where
+	// the role resolves from and carries the keys that store and remove the secret.
+	fieldSecret
 )
 
 type field struct {
@@ -86,7 +93,16 @@ const (
 	domainHint  = "a key you choose, without spaces; commands look up this default by it"
 	baseURLHint = "the root url of the instance, with scheme http or https"
 	envHint     = "the NAME of an environment variable that holds the secret, never the secret itself"
+	typeHint    = "env names one environment variable per role; keyring keeps the secrets in the credential store"
+	secretHint  = "s store the secret · p store it in the plaintext file · x remove it; typing is masked"
 )
+
+// typeLabel is the field that decides what a credential is: which variables it names, or that its secrets
+// live in a store. It is shown and chosen, never assumed.
+const typeLabel = "type"
+
+// defaultWidth is the width assumed until the terminal reports its own.
+const defaultWidth = 80
 
 func (f field) withHint(hint string) field {
 	f.hint = hint
@@ -116,9 +132,34 @@ type Model struct {
 	editing string
 	fields  []field
 	focus   int
+	// confirmRole names the role whose stored secret the confirmation removes. Empty means the
+	// confirmation is about the selected entry of the list.
+	confirmRole string
 
 	status string
 	fail   string
+	// busy names the store write in flight and probing the question in flight, if any. The editor keeps
+	// working while either runs.
+	busy    string
+	probing string
+	// width is what the terminal reported. Messages are wrapped into it instead of being cut off.
+	width int
+
+	// Credential store state. The editor never holds a secret: it holds where each role resolves from and
+	// which stages the resolver checked, both of which name no value.
+	secrets Secrets
+	sources map[string]secret.Source
+	checked map[string][]string
+	// writes counts the store writes in flight. They are counted, not generation numbered: each one has
+	// its own effect, so each outcome has to reach the user.
+	writes int
+	// probeID guards the display refresh, guardID the answer a waiting type change needs. They are apart
+	// so an ordinary refresh cannot take that answer away.
+	probeID     int
+	guardID     int
+	secretInput textinput.Model
+	secretRole  string
+	secretPlain bool
 
 	// Connection test state. Raw responses never enter the model, only the class and a redacted message.
 	tester     Tester
@@ -133,8 +174,9 @@ type Model struct {
 }
 
 // New builds the editor over an existing store. A missing configuration file starts an empty one. The
-// tester may be nil, in which case connection testing is unavailable.
-func New(store *config.Store, tester Tester, redactor *redact.Redactor) (*Model, error) {
+// tester may be nil, in which case connection testing is unavailable; secrets may be nil, in which case the
+// configuration stays editable and only the operations that would reach a store report why they cannot.
+func New(store *config.Store, tester Tester, secrets Secrets, redactor *redact.Redactor) (*Model, error) {
 	cfg, err := store.Load()
 	if err != nil {
 		var notFound *config.NotFoundError
@@ -146,9 +188,16 @@ func New(store *config.Store, tester Tester, redactor *redact.Redactor) (*Model,
 	if redactor == nil {
 		redactor = &redact.Redactor{}
 	}
+	if secrets == nil {
+		secrets = noSecrets{}
+	}
 	return &Model{
 		store: store, cfg: cfg, tester: tester, redactor: redactor,
-		status: "Loaded " + store.Path(),
+		secrets: secrets,
+		sources: map[string]secret.Source{},
+		checked: map[string][]string{},
+		width:   defaultWidth,
+		status:  "Loaded " + store.Path(),
 	}, nil
 }
 
@@ -165,24 +214,32 @@ func (m *Model) Init() tea.Cmd { return nil }
 
 // Update handles one event. It is the whole editor logic and needs no terminal.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if done, ok := msg.(testDoneMsg); ok {
-		m.finishTest(done)
+	switch msg := msg.(type) {
+	case testDoneMsg:
+		m.finishTest(msg)
 		return m, nil
-	}
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
+	case sourcesMsg:
+		return m, m.handleSources(msg)
+	case placedMsg:
+		return m, m.handlePlaced(msg)
+	case writtenMsg:
+		return m, m.handleWritten(msg)
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 		return m, nil
-	}
-
-	switch m.screen {
-	case screenMenu:
-		return m, m.updateMenu(key)
-	case screenList:
-		return m, m.updateList(key)
-	case screenForm:
-		return m, m.updateForm(key)
-	case screenConfirm:
-		return m, m.updateConfirm(key)
+	case tea.KeyMsg:
+		switch m.screen {
+		case screenMenu:
+			return m, m.updateMenu(msg)
+		case screenList:
+			return m, m.updateList(msg)
+		case screenForm:
+			return m, m.updateForm(msg)
+		case screenConfirm:
+			return m, m.updateConfirm(msg)
+		case screenSecret:
+			return m, m.updateSecret(msg)
+		}
 	}
 	return m, nil
 }
@@ -196,7 +253,7 @@ func (m *Model) updateMenu(key tea.KeyMsg) tea.Cmd {
 	case "down", "j":
 		m.cursor = wrap(m.cursor+1, int(sectionCount))
 	case "enter":
-		m.openSection(section(m.cursor))
+		return m.openSection(section(m.cursor))
 	}
 	return nil
 }
@@ -219,10 +276,10 @@ func (m *Model) updateList(key tea.KeyMsg) tea.Cmd {
 	case "down", "j":
 		m.cursor = wrap(m.cursor+1, len(m.names))
 	case "n":
-		m.openForm("")
+		return m.openForm("")
 	case "enter":
 		if name, ok := m.selected(); ok {
-			m.openForm(name)
+			return m.openForm(name)
 		}
 	case "d":
 		if _, ok := m.selected(); ok {
@@ -239,9 +296,9 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "esc":
 		// Cancelling discards the form; nothing was written.
-		m.openSection(m.section)
+		cmd := m.openSection(m.section)
 		m.status = "Cancelled"
-		return nil
+		return cmd
 	case "ctrl+c":
 		return m.quit()
 	case "tab", "down":
@@ -251,19 +308,27 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 		m.moveFocus(-1)
 		return nil
 	case "enter":
-		m.submit()
-		return nil
+		return m.submit()
 	}
 
 	current := &m.fields[m.focus]
-	if current.kind == fieldChoice {
+	switch current.kind {
+	case fieldChoice:
 		switch key.String() {
 		case "left", "h":
 			current.index = wrap(current.index-1, len(current.choices))
 		case "right", "l":
 			current.index = wrap(current.index+1, len(current.choices))
+		default:
+			return nil
+		}
+		if current.label == typeLabel {
+			return m.credentialTypeChosen()
 		}
 		return nil
+	case fieldSecret:
+		// A secret row holds nothing to type into, so its keys are free for what a secret needs.
+		return m.secretRowKey(current.label, key)
 	}
 	if current.readOnly {
 		return nil
@@ -276,9 +341,19 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 func (m *Model) updateConfirm(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "y":
-		m.delete()
+		if role := m.confirmRole; role != "" {
+			m.confirmRole = ""
+			m.screen = screenForm
+			return m.removeSecret(m.editing, role)
+		}
+		return m.delete()
 	case "n", "esc":
-		m.screen = screenList
+		if m.confirmRole != "" {
+			m.confirmRole = ""
+			m.screen = screenForm
+		} else {
+			m.screen = screenList
+		}
 		m.status = "Cancelled"
 	case "ctrl+c":
 		return m.quit()
@@ -361,14 +436,22 @@ func (m *Model) stopTest() {
 	m.testClass = ""
 }
 
-func (m *Model) openSection(s section) {
+func (m *Model) openSection(s section) tea.Cmd {
 	m.stopTest()
 	m.testName = ""
 	m.section = s
 	m.screen = screenList
 	m.names = m.entryNames(s)
 	m.cursor = 0
+	m.editing = ""
+	m.confirmRole = ""
 	m.clearMessages()
+	if s != sectionCredentials {
+		return nil
+	}
+	// The list says where each secret resolves from, and that answer comes from the resolver rather than
+	// from anything this editor remembers.
+	return m.refreshSources(m.keyringQueries())
 }
 
 func (m *Model) selected() (string, bool) {
@@ -403,13 +486,47 @@ func (m *Model) entryNames(s section) []string {
 }
 
 // openForm builds the form for a new entry, or for the named existing one.
-func (m *Model) openForm(name string) {
+func (m *Model) openForm(name string) tea.Cmd {
 	m.editing = name
 	m.screen = screenForm
 	m.focus = 0
 	m.clearMessages()
 	m.fields = m.buildFields(name)
 	m.applyFocus()
+	if m.section == sectionCredentials && m.credentialType() == config.CredentialTypeKeyring {
+		return m.refreshSources(m.editedQuery())
+	}
+	return nil
+}
+
+// credentialType is the type the credential form currently shows.
+func (m *Model) credentialType() string { return m.fieldValue(typeLabel) }
+
+// credentialTypeChosen switches the role rows to the type that is now selected.
+//
+// The same row means a different thing under each type: under env it holds the NAME of a variable, under
+// keyring it stands for an entry in the credential store. Drawing them alike is what let a keyring
+// credential look like an env credential and turn into one on the next save. A variable name that was
+// already typed survives a switch back, so trying out both types costs nothing.
+func (m *Model) credentialTypeChosen() tea.Cmd {
+	keyring := m.credentialType() == config.CredentialTypeKeyring
+	for i := range m.fields {
+		f := &m.fields[i]
+		if f.kind != fieldEnvName && f.kind != fieldSecret {
+			continue
+		}
+		if keyring {
+			// A secret row builds its hint from what the resolver reported, so it carries none itself.
+			f.kind, f.hint = fieldSecret, ""
+		} else {
+			f.kind, f.hint = fieldEnvName, envHint
+		}
+	}
+	m.applyFocus()
+	if keyring {
+		return m.refreshSources(m.editedQuery())
+	}
+	return nil
 }
 
 func (m *Model) buildFields(name string) []field {
@@ -428,8 +545,15 @@ func (m *Model) buildFields(name string) []field {
 		)
 	case sectionCredentials:
 		cred := m.cfg.Credentials[name]
+		credType := cred.Type
+		if credType == "" {
+			// A new credential starts as keyring: that is the type this editor can complete on its own,
+			// while env needs a variable exported in a shell the editor cannot reach.
+			credType = config.CredentialTypeKeyring
+		}
+		fields = append(fields, choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint))
 		for _, role := range config.SecretRoles() {
-			fields = append(fields, envField(role, cred.Values[role]))
+			fields = append(fields, roleField(role, cred.Values[role], credType))
 		}
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
@@ -446,25 +570,32 @@ func (m *Model) buildFields(name string) []field {
 	return fields
 }
 
-// submit applies the form to a copy of the configuration and saves it. The editor keeps the change only
-// when the store accepted it.
-func (m *Model) submit() {
+// submit saves the form, unless the change first has to be checked against the places that keep secrets.
+func (m *Model) submit() tea.Cmd {
 	m.trimFields()
+	if cmd := m.guardTypeChange(); cmd != nil {
+		return cmd
+	}
 	// The core owns every rule, including that a name must not be empty.
-	name := m.fields[0].value()
+	return m.save(m.fields[0].value())
+}
 
+// save applies the form to a copy of the configuration and saves it. The editor keeps the change only when
+// the store accepted it.
+func (m *Model) save(name string) tea.Cmd {
 	candidate := m.cfg.Clone()
 	if err := m.apply(candidate, name); err != nil {
 		m.fail = m.redactor.Apply(err.Error())
-		return
+		return nil
 	}
 	if err := m.store.Save(candidate); err != nil {
 		m.fail = m.redactor.Apply(err.Error())
-		return
+		return nil
 	}
 	m.cfg = candidate
-	m.openSection(m.section)
+	cmd := m.openSection(m.section)
 	m.status = "Saved " + name
+	return cmd
 }
 
 func (m *Model) apply(cfg *config.Config, name string) error {
@@ -476,13 +607,18 @@ func (m *Model) apply(cfg *config.Config, name string) error {
 			Options:  cfg.Services[name].Options,
 		})
 	case sectionCredentials:
-		values := map[string]string{}
-		for _, role := range config.SecretRoles() {
-			if v := m.fieldValue(role); v != "" {
-				values[role] = v
+		cred := config.Credential{Type: m.credentialType()}
+		// Only an env credential names anything here. A keyring credential carries no values at all, so
+		// this file cannot hold a secret even by accident; the core refuses one that does.
+		if cred.Type == config.CredentialTypeEnv {
+			cred.Values = map[string]string{}
+			for _, role := range config.SecretRoles() {
+				if v := m.fieldValue(role); v != "" {
+					cred.Values[role] = v
+				}
 			}
 		}
-		return cfg.SetCredential(name, config.Credential{Type: config.CredentialTypeEnv, Values: values})
+		return cfg.SetCredential(name, cred)
 	case sectionConnections:
 		return cfg.SetConnection(name, config.Connection{
 			Service:    m.fieldValue("service"),
@@ -509,27 +645,28 @@ func (m *Model) remove(cfg *config.Config, name string) error {
 	return nil
 }
 
-func (m *Model) delete() {
+func (m *Model) delete() tea.Cmd {
 	name, ok := m.selected()
 	if !ok {
 		m.screen = screenList
-		return
+		return nil
 	}
 
 	candidate := m.cfg.Clone()
 	if err := m.remove(candidate, name); err != nil {
 		m.fail = m.redactor.Apply(err.Error())
 		m.screen = screenList
-		return
+		return nil
 	}
 	if err := m.store.Save(candidate); err != nil {
 		m.fail = m.redactor.Apply(err.Error())
 		m.screen = screenList
-		return
+		return nil
 	}
 	m.cfg = candidate
-	m.openSection(m.section)
+	cmd := m.openSection(m.section)
 	m.status = "Deleted " + name
+	return cmd
 }
 
 func (m *Model) fieldValue(label string) string {
@@ -585,11 +722,17 @@ func textField(label, value string, readOnly bool) field {
 	return field{label: label, kind: fieldText, input: in, readOnly: readOnly}
 }
 
-// envField holds the NAME of an environment variable. The value is never read into the editor.
-func envField(role, envName string) field {
+// roleField is the row of one secret role. Under a credential of type env it holds the NAME of an
+// environment variable, which the editor reads and writes; under keyring it stands for an entry in the
+// credential store, which the editor can fill and remove but never read. The value is never read into the
+// editor in either case.
+func roleField(role, envName, credType string) field {
 	f := textField(role, envName, false)
-	f.kind = fieldEnvName
-	f.hint = envHint
+	f.kind, f.hint = fieldEnvName, envHint
+	if credType == config.CredentialTypeKeyring {
+		// A secret row builds its hint from what the resolver reported, so it carries none itself.
+		f.kind, f.hint = fieldSecret, ""
+	}
 	return f
 }
 
@@ -631,20 +774,20 @@ func (m *Model) View() string {
 		for i := section(0); i < sectionCount; i++ {
 			b.WriteString(line(int(i) == m.cursor, i.title()) + "\n")
 		}
-		b.WriteString(hint("up/down move · enter open · q quit"))
+		b.WriteString(m.hint("up/down move · enter open · q quit"))
 	case screenList:
 		b.WriteString(titleStyle.Render(m.section.title()) + "\n\n")
 		if len(m.names) == 0 {
 			b.WriteString(hintStyle.Render("nothing configured yet") + "\n")
 		}
 		for i, name := range m.names {
-			b.WriteString(line(i == m.cursor, m.describe(name)) + "\n")
+			b.WriteString(m.row(i == m.cursor, m.describe(name)) + "\n")
 		}
 		if m.section == sectionConnections {
 			b.WriteString(m.testLine())
-			b.WriteString(hint("n new · enter edit · d delete · t test · esc back"))
+			b.WriteString(m.hint("n new · enter edit · d delete · t test · esc back"))
 		} else {
-			b.WriteString(hint("n new · enter edit · d delete · esc back"))
+			b.WriteString(m.hint("n new · enter edit · d delete · esc back"))
 		}
 	case screenForm:
 		what := "New " + strings.ToLower(m.section.title())
@@ -654,23 +797,114 @@ func (m *Model) View() string {
 		b.WriteString(titleStyle.Render(what) + "\n\n")
 		for i, f := range m.fields {
 			b.WriteString(line(i == m.focus, m.renderField(f, i == m.focus)) + "\n")
-			if f.hint != "" {
-				b.WriteString("    " + hintStyle.Render(f.hint) + "\n")
+			if hint := m.fieldHint(f); hint != "" {
+				b.WriteString(m.indented(hint) + "\n")
 			}
 		}
-		b.WriteString(hint("tab move · left/right choose · enter save · esc cancel"))
+		keys := "tab move · left/right choose · enter save · esc cancel"
+		if m.fields[m.focus].kind == fieldSecret {
+			keys = "s store secret · p plaintext · x remove · " + keys
+		}
+		b.WriteString(m.hint(keys))
+	case screenSecret:
+		where := "the credential store of this machine"
+		if m.secretPlain {
+			where = "the plaintext file " + m.plaintextPath()
+		}
+		b.WriteString(titleStyle.Render(fmt.Sprintf("Secret for %s.%s", m.editing, m.secretRole)) + "\n\n")
+		b.WriteString("  " + m.secretInput.View() + "\n")
+		b.WriteString(m.indented(
+			"the value is masked while you type, is never shown back, and goes into "+where) + "\n")
+		b.WriteString(m.hint("enter store · esc cancel"))
 	case screenConfirm:
-		name, _ := m.selected()
-		b.WriteString(fmt.Sprintf("Delete %q?\n", name))
-		b.WriteString(hint("y delete · n keep"))
+		if m.confirmRole != "" {
+			b.WriteString(fmt.Sprintf("Remove the stored secret for %s.%s?\n", m.editing, m.confirmRole))
+			b.WriteString(m.indented(
+				"it is removed from the credential store and from the plaintext file; an environment "+
+					"variable is not touched, because it belongs to your shell") + "\n")
+		} else {
+			name, _ := m.selected()
+			b.WriteString(fmt.Sprintf("Delete %q?\n", name))
+			if m.section == sectionCredentials &&
+				m.cfg.Credentials[name].Type == config.CredentialTypeKeyring {
+				b.WriteString(m.indented(
+					"its stored secrets are not removed with it; remove them first with x on the role, "+
+						"or later with 'callbell credential delete'") + "\n")
+			}
+		}
+		b.WriteString(m.hint("y remove · n keep"))
 	}
 
+	for _, note := range []string{m.busy, m.probing} {
+		if note != "" {
+			b.WriteString("\n\n" + m.wrapped(hintStyle, note+" ... (the editor stays usable)"))
+		}
+	}
 	if m.fail != "" {
-		b.WriteString("\n\n" + failStyle.Render("error: "+m.fail))
+		b.WriteString("\n\n" + m.wrapped(failStyle, "error: "+m.fail))
 	} else if m.status != "" {
-		b.WriteString("\n\n" + hintStyle.Render(m.status))
+		b.WriteString("\n\n" + m.wrapped(hintStyle, m.status))
 	}
 	return b.String()
+}
+
+// wrapped fits a message into the terminal instead of leaving it to be cut off at the right edge.
+//
+// The messages of the cascade carry the way out at their end: the file to chmod, the command to run, the
+// variable to export. A truncated line loses exactly the part the reader needs, and it is the longest
+// messages, the ones that explain the most, that get truncated. Wrapping keeps all of it on screen and
+// needs nothing but the width the terminal already reports.
+func (m *Model) wrapped(style lipgloss.Style, text string) string {
+	return style.Width(m.usable(0)).Render(text)
+}
+
+// usable is the room left for text after a prefix of n cells.
+//
+// A terminal that has not reported its width yet is assumed to be the usual one; a terminal that reported a
+// width narrower than the prefix still gets one cell to wrap into, rather than being drawn at the assumed
+// width and spilling. Falling back to the assumed width because the real one is small would be the very
+// truncation this is here to avoid.
+func (m *Model) usable(prefix int) int {
+	width := m.width
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if width-prefix < 1 {
+		return 1
+	}
+	return width - prefix
+}
+
+// fit returns the prefix to draw and the room left for the text beside it, so that the two together never
+// exceed the terminal. A terminal narrower than the prefix keeps one cell for the text and loses part of
+// the prefix: an indent that pushes text past the right edge is worse than a missing indent.
+func (m *Model) fit(prefix string) (string, int) {
+	if m.width > 0 {
+		if room := m.width - 1; room < len(prefix) {
+			prefix = prefix[:max(room, 0)]
+		}
+	}
+	return prefix, m.usable(len(prefix))
+}
+
+// indented draws a hint under the row it belongs to and keeps its continuation lines there too, so a hint
+// that needs two lines still reads as one hint rather than as a stray sentence at the left margin.
+func (m *Model) indented(text string) string {
+	indent, width := m.fit("    ")
+	lines := strings.Split(hintStyle.Width(width).Render(text), "\n")
+	for i, l := range lines {
+		lines[i] = indent + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+// fieldHint is what one form row says about itself. A secret row adds the stages the resolver checked,
+// which is the actionable half of a missing secret and names no value.
+func (m *Model) fieldHint(f field) string {
+	if f.kind == fieldSecret {
+		return m.secretRowHint(m.editing, f.label)
+	}
+	return f.hint
 }
 
 // testLine reports what the connection test is doing or found. It shows the stable class only.
@@ -693,14 +927,20 @@ func (m *Model) describe(name string) string {
 		s := m.cfg.Services[name]
 		return fmt.Sprintf("%s  %s  %s", name, s.Provider, s.BaseURL)
 	case sectionCredentials:
+		// The type decides what the credential is, so it is part of the line rather than something the
+		// reader has to open the form to find out.
 		cred := m.cfg.Credentials[name]
-		parts := make([]string, 0, len(cred.Values))
+		parts := make([]string, 0, len(config.SecretRoles()))
 		for _, role := range config.SecretRoles() {
-			if env, ok := cred.Values[role]; ok {
-				parts = append(parts, fmt.Sprintf("%s=%s %s", role, env, envState(env)))
+			switch {
+			case cred.Type == config.CredentialTypeKeyring:
+				parts = append(parts, fmt.Sprintf("%s (%s)", role, m.storedSource(name, role)))
+			case cred.Values[role] != "":
+				parts = append(parts, fmt.Sprintf("%s=%s (%s)", role, cred.Values[role],
+					m.envSource(cred.Values[role])))
 			}
 		}
-		return name + "  " + strings.Join(parts, "  ")
+		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s", name, cred.Type, strings.Join(parts, "  ")))
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
 		return fmt.Sprintf("%s  %s / %s", name, conn.Service, conn.Credential)
@@ -716,6 +956,10 @@ func (m *Model) describe(name string) string {
 func (m *Model) renderField(f field, focused bool) string {
 	value := f.value()
 	switch {
+	case f.kind == fieldSecret:
+		// A secret row shows where the role resolves from and nothing else: there is no value to draw,
+		// and the resolver would not hand one out.
+		value = "(" + m.storedSource(m.editing, f.label) + ")"
 	case f.kind == fieldChoice && len(f.choices) == 0:
 		value = "(nothing to choose)"
 	case f.kind == fieldChoice:
@@ -723,22 +967,14 @@ func (m *Model) renderField(f field, focused bool) string {
 	case focused && !f.readOnly:
 		value = f.input.View()
 		if f.kind == fieldEnvName && f.value() != "" {
-			value += " " + envState(f.value())
+			value += " (" + m.envSource(f.value()) + ")"
 		}
 	case f.kind == fieldEnvName && value != "":
-		value += " " + envState(value)
+		value += " (" + m.envSource(value) + ")"
 	case value == "":
 		value = hintStyle.Render("(empty)")
 	}
 	return fmt.Sprintf("%-12s %s", f.label, value)
-}
-
-// envState reports only whether a variable is set. The value never leaves the environment.
-func envState(name string) string {
-	if _, ok := os.LookupEnv(name); ok {
-		return "(set)"
-	}
-	return "(not set)"
 }
 
 func line(active bool, text string) string {
@@ -748,11 +984,37 @@ func line(active bool, text string) string {
 	return "  " + text
 }
 
-func hint(text string) string { return "\n" + hintStyle.Render(text) }
+// row draws one line of a list. A line that does not fit is continued under its own entry instead of being
+// cut off at the right edge: the list is where the source of every secret role stands, and that is the part
+// that falls off first.
+func (m *Model) row(active bool, text string) string {
+	blank, width := m.fit("  ")
+	marker := blank
+	if active && len(blank) == 2 {
+		marker = "> "
+	}
+	style := lipgloss.NewStyle()
+	if active {
+		style = activeStyle
+	}
+	lines := strings.Split(style.Width(width).Render(text), "\n")
+	for i, l := range lines {
+		prefix := blank
+		if i == 0 {
+			prefix = marker
+		}
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hint is the key line of a screen. Like every other prose line it is wrapped into the terminal instead of
+// being cut off at its right edge.
+func (m *Model) hint(text string) string { return "\n" + m.wrapped(hintStyle, text) }
 
 // Run starts the editor on the given terminal streams.
-func Run(store *config.Store, tester Tester, redactor *redact.Redactor, in *os.File, out *os.File) error {
-	model, err := New(store, tester, redactor)
+func Run(store *config.Store, tester Tester, secrets Secrets, redactor *redact.Redactor, in, out *os.File) error {
+	model, err := New(store, tester, secrets, redactor)
 	if err != nil {
 		return err
 	}

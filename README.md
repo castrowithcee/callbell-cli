@@ -74,9 +74,11 @@ privilege, and the two capabilities it offers.
 ## Terminal editor
 
 `callbell tui` edits services, credentials, connections, and domain defaults through the same core and the
-same validating, atomic store the CLI uses, and tests a selected connection with `t`. It never asks for or
-displays a secret: a credential names environment variables, and the editor shows only whether a named
-variable is set.
+same validating, atomic store the CLI uses, and tests a selected connection with `t`. A keyring credential
+is set up there completely: `s` on a secret role takes the value in a masked field and hands it to the
+credential store, `p` writes it to the explicit plaintext fallback, `x` removes it. Nothing is ever
+displayed back; every role shows which source delivers it, and the configuration file never holds a
+secret.
 
 ## Output
 

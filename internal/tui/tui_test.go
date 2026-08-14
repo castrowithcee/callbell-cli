@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // Canary values prove that a secret in the environment never reaches the editor or the file.
@@ -20,42 +21,82 @@ const (
 
 func newModel(t *testing.T) (*Model, *config.Store, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "callbell", "config.yaml")
+	return newEnvModel(t, nil)
+}
+
+// newEnvModel builds an editor that sees exactly the environment the test names.
+func newEnvModel(t *testing.T, env map[string]string) (*Model, *config.Store, string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "callbell")
+	path := filepath.Join(dir, "config.yaml")
 	store := config.NewStore(path)
 
-	model, err := New(store, nil, nil)
+	secrets, _ := newResolver(t, dir, env)
+	model, err := New(store, nil, secrets, nil)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
 	return model, store, path
 }
 
+// newResolver builds a resolver over a credential store that lives in this process only, a plaintext
+// fallback inside the test's own directory, and exactly the environment the test names.
+//
+// The environment is pinned rather than inherited: a variable that happens to be exported where the suite
+// runs must not decide what these tests see, and the derived names of this project are guessable enough
+// that someone will have one set. No test ever touches the credential store of the machine either.
+func newResolver(t *testing.T, dir string, env map[string]string) (*secret.Resolver, *secret.MemoryStore) {
+	t.Helper()
+	store := secret.NewMemoryStore()
+	file := secret.NewFile(filepath.Join(dir, secret.FileName))
+	return secret.NewWith(func(name string) string { return env[name] }, store, file, nil), store
+}
+
+// keyMsg is the event a terminal sends for one key.
+func keyMsg(k string) tea.KeyMsg {
+	switch k {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+	}
+}
+
 // press sends key events the way a terminal would.
 func press(t *testing.T, m *Model, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
-		var msg tea.KeyMsg
-		switch k {
-		case "enter":
-			msg = tea.KeyMsg{Type: tea.KeyEnter}
-		case "tab":
-			msg = tea.KeyMsg{Type: tea.KeyTab}
-		case "shift+tab":
-			msg = tea.KeyMsg{Type: tea.KeyShiftTab}
-		case "esc":
-			msg = tea.KeyMsg{Type: tea.KeyEsc}
-		case "up":
-			msg = tea.KeyMsg{Type: tea.KeyUp}
-		case "down":
-			msg = tea.KeyMsg{Type: tea.KeyDown}
-		case "left":
-			msg = tea.KeyMsg{Type: tea.KeyLeft}
-		case "right":
-			msg = tea.KeyMsg{Type: tea.KeyRight}
-		default:
-			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+		m.Update(keyMsg(k))
+	}
+}
+
+// pump presses keys and delivers the messages of the commands they produce, the way the event loop does.
+// It is how a test drives everything that reaches the credential store.
+func pump(t *testing.T, m *Model, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		_, cmd := m.Update(keyMsg(k))
+		for i := 0; cmd != nil && i < 8; i++ {
+			msg := cmd()
+			if msg == nil {
+				break
+			}
+			_, cmd = m.Update(msg)
 		}
-		m.Update(msg)
 	}
 }
 
@@ -82,7 +123,7 @@ func openSectionByName(t *testing.T, m *Model, s section) {
 	for i := 0; i < int(s); i++ {
 		press(t, m, "down")
 	}
-	press(t, m, "enter")
+	pump(t, m, "enter")
 	if m.section != s {
 		t.Fatalf("section = %v, want %v", m.section, s)
 	}
@@ -100,16 +141,35 @@ func addService(t *testing.T, m *Model, name, baseURL string) {
 	press(t, m, "enter")
 }
 
+// addCredential walks the real key sequence for a credential of type env: name, type, one variable name
+// per role.
 func addCredential(t *testing.T, m *Model, name string, envNames ...string) {
 	t.Helper()
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	typeText(t, m, name)
+	press(t, m, "tab")
+	selectChoice(t, m, config.CredentialTypeEnv)
 	for _, env := range envNames {
 		press(t, m, "tab")
 		typeText(t, m, env)
 	}
 	press(t, m, "enter")
+}
+
+// addKeyringCredential creates a credential whose secrets live in the credential store. It names nothing:
+// the roles are filled afterwards, through the masked prompt.
+func addKeyringCredential(t *testing.T, m *Model, name string) {
+	t.Helper()
+	openSectionByName(t, m, sectionCredentials)
+	press(t, m, "n")
+	typeText(t, m, name)
+	press(t, m, "tab")
+	selectChoice(t, m, config.CredentialTypeKeyring)
+	pump(t, m, "enter")
+	if m.fail != "" {
+		t.Fatalf("creating the keyring credential reported %q", m.fail)
+	}
 }
 
 func addConnection(t *testing.T, m *Model, name, service, credential string) {
@@ -413,10 +473,10 @@ func TestNameOfAnExistingEntryIsReadOnly(t *testing.T) {
 
 // Neither the editor nor the file ever carries a secret value.
 func TestNoSecretValues(t *testing.T) {
-	t.Setenv("WIKI_READER_ID", canaryID)
-	t.Setenv("WIKI_READER_SECRET", canarySecret)
-
-	m, _, path := newModel(t)
+	m, _, path := newEnvModel(t, map[string]string{
+		"WIKI_READER_ID":     canaryID,
+		"WIKI_READER_SECRET": canarySecret,
+	})
 	addService(t, m, "wiki", "https://wiki.example.invalid")
 	addCredential(t, m, "reader", "WIKI_READER_ID", "WIKI_READER_SECRET")
 	addConnection(t, m, "wiki", "wiki", "reader")
@@ -449,9 +509,10 @@ func TestNoSecretValues(t *testing.T) {
 			t.Errorf("a secret value reached the file:\n%s", data)
 		}
 	}
-	// The variable names and their state are what the editor shows instead.
-	if !strings.Contains(rendered.String(), "WIKI_READER_ID") || !strings.Contains(rendered.String(), "(set)") {
-		t.Errorf("the editor should show the variable name and its state:\n%s", rendered.String())
+	// The variable names and the source that delivers are what the editor shows instead.
+	if !strings.Contains(rendered.String(), "WIKI_READER_ID") ||
+		!strings.Contains(rendered.String(), "("+string(secret.SourceEnv)+")") {
+		t.Errorf("the editor should show the variable name and its source:\n%s", rendered.String())
 	}
 }
 
@@ -571,18 +632,24 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
+	press(t, m, "tab")
+	selectChoice(t, m, config.CredentialTypeEnv)
 	view := m.View()
-	for _, want := range []string{"the NAME of an environment variable", "never the secret itself"} {
+	for _, want := range []string{"the NAME of an environment variable", "never the secret"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the credential form does not say %q:\n%s", want, view)
 		}
 	}
-	// Every role field carries the hint, not just the first one.
-	if got, want := strings.Count(view, envHint), len(config.SecretRoles()); got != want {
+	// Every role field carries the hint, not just the first one. A hint is wrapped into the terminal, so
+	// the test looks for a fragment that survives wrapping rather than for the whole sentence.
+	if got, want := strings.Count(view, "the NAME of an environment"), len(config.SecretRoles()); got != want {
 		t.Errorf("hint appears %d times, want once per role field (%d):\n%s", got, want, view)
 	}
-	if !strings.Contains(view, nameHint) {
+	if !strings.Contains(view, "a key you choose, without spaces") {
 		t.Errorf("the name field has no hint:\n%s", view)
+	}
+	if !strings.Contains(view, "keyring keeps the secrets") {
+		t.Errorf("the form does not say what the type decides:\n%s", view)
 	}
 
 	openSectionByName(t, m, sectionServices)
@@ -635,17 +702,20 @@ func TestSpacesAtTheEdgesAreTrimmedVisibly(t *testing.T) {
 	}
 }
 
-// An unset variable is reported as such, again without reading any value.
-func TestEnvState(t *testing.T) {
-	t.Setenv("CALLBELL_TUI_PRESENT", "value")
-	t.Setenv("CALLBELL_TUI_ABSENT", "")
-	_ = os.Unsetenv("CALLBELL_TUI_ABSENT")
+// A variable that carries nothing is reported as missing, again without reading any value. The answer for
+// a credential of type env comes from the environment alone: its resolution ends there, so asking costs no
+// store round trip.
+func TestEnvSourceReportsTheStageWithoutTheValue(t *testing.T) {
+	m, _, _ := newEnvModel(t, map[string]string{"CALLBELL_TUI_PRESENT": "value"})
 
-	if got := envState("CALLBELL_TUI_PRESENT"); got != "(set)" {
-		t.Errorf("envState() = %q, want (set)", got)
+	if got, want := m.envSource("CALLBELL_TUI_PRESENT"), string(secret.SourceEnv); got != want {
+		t.Errorf("envSource() = %q, want %q", got, want)
 	}
-	if got := envState("CALLBELL_TUI_ABSENT"); got != "(not set)" {
-		t.Errorf("envState() = %q, want (not set)", got)
+	if got, want := m.envSource("CALLBELL_TUI_ABSENT"), string(secret.SourceMissing); got != want {
+		t.Errorf("envSource() = %q, want %q", got, want)
+	}
+	if got := m.envSource(""); got != sourceUnnamed {
+		t.Errorf("envSource() = %q, want %q", got, sourceUnnamed)
 	}
 }
 
