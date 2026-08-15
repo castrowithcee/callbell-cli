@@ -113,8 +113,16 @@ const (
 // live in a store. It is shown and chosen, never assumed.
 const typeLabel = "type"
 
-// defaultWidth is the width assumed until the terminal reports its own.
-const defaultWidth = 80
+// The defaults bridge the first frame until the terminal reports its real size. From then on both
+// dimensions decide which dashboard can fit.
+const (
+	defaultWidth  = 80
+	defaultHeight = 100
+	minimumWidth  = 40
+	minimumHeight = 12
+	wideWidth     = 80
+	wideHeight    = 18
+)
 
 func (f field) withHint(hint string) field {
 	f.hint = hint
@@ -155,7 +163,8 @@ type Model struct {
 	busy    string
 	probing string
 	// width is what the terminal reported. Messages are wrapped into it instead of being cut off.
-	width int
+	width  int
+	height int
 	// configExists distinguishes a loaded file from a new in-memory configuration. The default directory
 	// is deliberately created only by the first successful save, and the editor must say so instead of
 	// claiming that a file which does not exist was loaded.
@@ -214,7 +223,7 @@ func New(store *config.Store, tester Tester, secrets Secrets, redactor *redact.R
 		secrets: secrets,
 		sources: map[string]secret.Source{},
 		checked: map[string][]string{},
-		width:   defaultWidth, configExists: configExists,
+		width:   defaultWidth, height: defaultHeight, configExists: configExists,
 	}, nil
 }
 
@@ -226,8 +235,9 @@ func asNotFound(err error, target **config.NotFoundError) bool {
 	return ok
 }
 
-// Init satisfies tea.Model. The cursor is static, so the editor needs no start-up command and no timer.
-func (m *Model) Init() tea.Cmd { return nil }
+// Init resolves credential locations for the dashboard. It asks only for source metadata; secret values
+// never enter the model.
+func (m *Model) Init() tea.Cmd { return m.refreshSources(m.keyringQueries()) }
 
 // Update handles one event. It is the whole editor logic and needs no terminal.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -242,9 +252,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case writtenMsg:
 		return m, m.handleWritten(msg)
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		// A zero dimension is also how focused tests report only the dimension they exercise. Real size
+		// messages carry both; keep the last known value until a non-zero replacement arrives.
+		if msg.Width != 0 {
+			m.width = max(msg.Width, 1)
+		}
+		if msg.Height != 0 {
+			m.height = max(msg.Height, 1)
+		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.activeScreenTooSmall() {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, m.quit()
+			}
+			return m, nil
+		}
 		switch m.screen {
 		case screenMenu:
 			return m, m.updateMenu(msg)
@@ -264,20 +288,52 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateMenu(key tea.KeyMsg) tea.Cmd {
+	if s, ok := sectionShortcut(key.String()); ok {
+		return m.openSection(s)
+	}
 	switch key.String() {
 	case "q", "esc", "ctrl+c":
 		return m.quit()
-	case "up", "k":
+	case "shift+tab":
 		m.cursor = wrap(m.cursor-1, int(sectionCount))
-	case "down", "j":
+	case "tab":
 		m.cursor = wrap(m.cursor+1, int(sectionCount))
+	case "up", "k":
+		m.moveDashboardFocus(0, -1)
+	case "down", "j":
+		m.moveDashboardFocus(0, 1)
+	case "left", "h":
+		m.moveDashboardFocus(-1, 0)
+	case "right", "l":
+		m.moveDashboardFocus(1, 0)
 	case "enter":
 		return m.openSection(section(m.cursor))
+	case "n":
+		cmd := m.openSection(section(m.cursor))
+		if reason := m.newEntryBlocked(); reason != "" {
+			m.fail = reason
+			return cmd
+		}
+		return tea.Batch(cmd, m.openForm(""))
 	}
 	return nil
 }
 
+func (m *Model) moveDashboardFocus(horizontal, vertical int) {
+	if m.dashboardLayout() != dashboardWide {
+		m.cursor = wrap(m.cursor+horizontal+vertical, int(sectionCount))
+		return
+	}
+	row, column := m.cursor/2, m.cursor%2
+	row = wrap(row+vertical, 2)
+	column = wrap(column+horizontal, 2)
+	m.cursor = row*2 + column
+}
+
 func (m *Model) updateList(key tea.KeyMsg) tea.Cmd {
+	if s, ok := sectionShortcut(key.String()); ok {
+		return m.openSection(s)
+	}
 	switch key.String() {
 	case "esc", "q":
 		if m.testing {
@@ -320,7 +376,11 @@ func (m *Model) updateList(key tea.KeyMsg) tea.Cmd {
 // a schema error. Existing entries remain editable even if a hand-written file is inconsistent; the core
 // still owns validation in that case.
 func (m *Model) newEntryBlocked() string {
-	switch m.section {
+	return m.newEntryBlockedFor(m.section)
+}
+
+func (m *Model) newEntryBlockedFor(s section) string {
+	switch s {
 	case sectionConnections:
 		var missing []string
 		if len(m.cfg.Services) == 0 {
@@ -880,6 +940,13 @@ func wrap(i, n int) int {
 	return ((i % n) + n) % n
 }
 
+func sectionShortcut(key string) (section, bool) {
+	if len(key) != 1 || key[0] < '1' || key[0] > '4' {
+		return 0, false
+	}
+	return section(key[0] - '1'), true
+}
+
 var (
 	titleStyle  = lipgloss.NewStyle().Bold(true)
 	activeStyle = lipgloss.NewStyle().Bold(true)
@@ -892,7 +959,20 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
+	if m.activeScreenTooSmall() {
+		return m.resizeView()
+	}
+	if m.screen == screenMenu {
+		return m.dashboardView()
+	}
+	view := m.editorView()
+	if !m.viewFits(view) {
+		return m.resizeView()
+	}
+	return view
+}
 
+func (m *Model) editorView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Callbell setup") + "\n")
 	path := "Config: " + m.store.Path()
@@ -902,12 +982,6 @@ func (m *Model) View() string {
 	b.WriteString(m.wrapped(hintStyle, path) + "\n\n")
 
 	switch m.screen {
-	case screenMenu:
-		b.WriteString(m.wrapped(activeStyle, "Next: "+m.nextStep()) + "\n\n")
-		for i := section(0); i < sectionCount; i++ {
-			b.WriteString(m.row(int(i) == m.cursor, m.menuLine(i)) + "\n")
-		}
-		b.WriteString(m.hint("up/down move · enter open · q quit"))
 	case screenList:
 		b.WriteString(titleStyle.Render(m.section.title()) + "\n\n")
 		if len(m.names) == 0 {
@@ -1000,14 +1074,334 @@ func (m *Model) View() string {
 	return b.String()
 }
 
-func (m *Model) menuLine(s section) string {
-	detail := [...]string{
-		"BookStack server URL",
-		"token ID and token secret",
-		"combine a service and credential",
-		"optional connection for knowledge commands",
-	}[s]
-	return fmt.Sprintf("%d. %s (%d) - %s", int(s)+1, s.title(), len(m.entryNames(s)), detail)
+type dashboardLayout int
+
+const (
+	dashboardCompact dashboardLayout = iota
+	dashboardStacked
+	dashboardWide
+)
+
+func (m *Model) terminalTooSmall() bool {
+	return m.width > 0 && m.height > 0 && (m.width < minimumWidth || m.height < minimumHeight)
+}
+
+func (m *Model) activeScreenTooSmall() bool {
+	if m.terminalTooSmall() {
+		return true
+	}
+	return m.screen != screenMenu && !m.viewFits(m.editorView())
+}
+
+func (m *Model) viewFits(view string) bool {
+	lines := strings.Split(view, "\n")
+	if m.height > 0 && len(lines) > m.height {
+		return false
+	}
+	if m.width > 0 {
+		for _, line := range lines {
+			if lipgloss.Width(line) > m.width {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (m *Model) dashboardLayout() dashboardLayout {
+	switch {
+	case m.width >= wideWidth && m.height >= wideHeight:
+		return dashboardWide
+	case m.width >= 60 && m.height >= 22:
+		return dashboardStacked
+	default:
+		return dashboardCompact
+	}
+}
+
+// resizeView is deliberately useful even at one cell by one row: q remains visible, while additional
+// room reveals the requested size. Rendering it does not change the screen, focus, form, or test state, so
+// resizing back resumes exactly where the user was.
+func (m *Model) resizeView() string {
+	width, height := minimumWidth, minimumHeight
+	if m.screen != screenMenu && !m.terminalTooSmall() {
+		view := m.editorView()
+		lines := strings.Split(view, "\n")
+		height = max(height, len(lines))
+		for _, line := range lines {
+			width = max(width, lipgloss.Width(line))
+		}
+	}
+	lines := []string{"q", "Resize terminal", fmt.Sprintf("Need %dx%d", width, height)}
+	if m.width >= 6 {
+		lines[0] = "q quit"
+	}
+	return m.boundView(strings.Join(lines, "\n"))
+}
+
+func (m *Model) dashboardView() string {
+	var b strings.Builder
+	b.WriteString(m.clipLine("Callbell setup"))
+	b.WriteByte('\n')
+
+	layout := m.dashboardLayout()
+	if layout == dashboardCompact {
+		b.WriteString(wrapCells(m.dashboardPath(), m.width))
+		b.WriteByte('\n')
+		for s := section(0); s < sectionCount; s++ {
+			marker := "  "
+			if int(s) == m.cursor {
+				marker = "> "
+			}
+			b.WriteString(m.clipLine(fmt.Sprintf("%s%d. %-13s %d", marker, int(s)+1, s.title(),
+				len(m.entryNames(s)))))
+			b.WriteByte('\n')
+		}
+		b.WriteString(wrapCells("Next: "+m.nextStep(), m.width))
+		b.WriteByte('\n')
+		b.WriteString(m.clipLine("arrows/hjkl/tab · enter · n · 1-4 · q"))
+	} else {
+		path := m.dashboardPath()
+		b.WriteString(wrapCells(path, m.width))
+		b.WriteByte('\n')
+		b.WriteString(wrapCells("Next: "+m.nextStep(), m.width))
+		b.WriteByte('\n')
+		rows := m.dashboardRows(layout, path)
+
+		if layout == dashboardWide {
+			left := (m.width - 1) / 2
+			right := m.width - left - 1
+			for row := 0; row < 2; row++ {
+				if row > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(joinCards(m.dashboardCard(section(row*2), left, rows),
+					m.dashboardCard(section(row*2+1), right, rows)))
+				b.WriteByte('\n')
+			}
+		} else {
+			for s := section(0); s < sectionCount; s++ {
+				b.WriteString(m.dashboardCard(s, m.width, rows))
+				b.WriteByte('\n')
+			}
+		}
+		help := "arrows/hjkl/tab · enter · n · 1-4 · q"
+		if layout == dashboardWide {
+			help = "arrows/hjkl/tab move · enter open · n new · 1-4 open · q quit"
+		}
+		b.WriteString(m.clipLine(help))
+	}
+
+	for _, note := range []string{m.busy, m.probing} {
+		if note != "" {
+			b.WriteByte('\n')
+			b.WriteString(wrapCells(note+" ...", m.width))
+		}
+	}
+	if m.fail != "" {
+		b.WriteByte('\n')
+		b.WriteString(wrapCells("error: "+m.fail, m.width))
+	} else if m.status != "" {
+		b.WriteByte('\n')
+		b.WriteString(wrapCells(m.status, m.width))
+	}
+	return m.boundView(strings.TrimSuffix(b.String(), "\n"))
+}
+
+func (m *Model) dashboardPath() string {
+	path := "Config: " + m.store.Path()
+	if !m.configExists {
+		path += " (created on first save)"
+	}
+	return path
+}
+
+func (m *Model) dashboardRows(layout dashboardLayout, path string) int {
+	headerRows := 1 + len(strings.Split(wrapCells(path, m.width), "\n")) +
+		len(strings.Split(wrapCells("Next: "+m.nextStep(), m.width), "\n")) + 1
+	if layout == dashboardWide {
+		headerRows++ // the blank line between the two card rows
+	}
+	for _, note := range []string{m.busy, m.probing} {
+		if note != "" {
+			headerRows += len(strings.Split(wrapCells(note+" ...", m.width), "\n"))
+		}
+	}
+	if m.fail != "" {
+		headerRows += len(strings.Split(wrapCells("error: "+m.fail, m.width), "\n"))
+	} else if m.status != "" {
+		headerRows += len(strings.Split(wrapCells(m.status, m.width), "\n"))
+	}
+
+	groups := 4
+	if layout == dashboardWide {
+		groups = 2
+	}
+	available := max((m.height-headerRows)/groups-2, 1) // top and bottom border use two rows
+	needed := 1
+	for s := section(0); s < sectionCount; s++ {
+		needed = max(needed, len(m.dashboardDetails(s)))
+	}
+	return min(available, max(needed, 2))
+}
+
+// dashboardCard is a small table: its top border identifies the section and count; following rows are
+// actual configured entries or the concrete prerequisite for creating one. Its fixed dimensions make two
+// cards safe to join without relying on terminal-side wrapping.
+func (m *Model) dashboardCard(s section, width, rows int) string {
+	width = max(width, 4)
+	inner := width - 4
+	bottom := "╰" + strings.Repeat("─", width-2) + "╯"
+	marker := "  "
+	if int(s) == m.cursor {
+		marker = "> "
+	}
+	label := truncateCells(fmt.Sprintf("%s%d. %s · %d · %s ", marker, int(s)+1, s.title(),
+		len(m.entryNames(s)), dashboardPurpose(s)), width-2)
+	top := "╭" + label + strings.Repeat("─", max(width-2-lipgloss.Width(label), 0)) + "╮"
+	lines := make([]string, 0, rows)
+	details := m.dashboardDetails(s)
+	if len(details) > rows {
+		lines = append(lines, details[:rows-1]...)
+		lines = append(lines, fmt.Sprintf("+%d more", len(details)-rows+1))
+	} else {
+		lines = append(lines, details...)
+	}
+	for len(lines) < rows {
+		lines = append(lines, "")
+	}
+
+	rendered := make([]string, 0, len(lines)+2)
+	rendered = append(rendered, top)
+	for _, line := range lines {
+		rendered = append(rendered, "│ "+padLine(truncateCells(line, inner), inner)+" │")
+	}
+	rendered = append(rendered, bottom)
+	return strings.Join(rendered, "\n")
+}
+
+func dashboardPurpose(s section) string {
+	return [...]string{"server URLs", "secret sources", "service + credential", "optional choices"}[s]
+}
+
+func (m *Model) dashboardDetails(s section) []string {
+	names := m.entryNames(s)
+	if len(names) == 0 {
+		if reason := m.newEntryBlockedFor(s); reason != "" {
+			return []string{strings.TrimSuffix(strings.Split(reason, ".")[0], ".")}
+		}
+		if s == sectionDefaults {
+			return []string{"Optional; commands can use --connection"}
+		}
+		return []string{"No entries; press n to create one"}
+	}
+	details := make([]string, 0, len(names))
+	for _, name := range names {
+		details = append(details, m.dashboardEntry(s, name))
+	}
+	return details
+}
+
+// dashboardEntry contains configuration and resolver status only. In particular it never requests or
+// renders a secret value.
+func (m *Model) dashboardEntry(s section, name string) string {
+	switch s {
+	case sectionServices:
+		service := m.cfg.Services[name]
+		return fmt.Sprintf("%s · %s · %s", name, service.Provider, service.BaseURL)
+	case sectionCredentials:
+		cred := m.cfg.Credentials[name]
+		roles := make([]string, 0, len(config.SecretRoles()))
+		for _, role := range config.SecretRoles() {
+			source := sourceUnnamed
+			if cred.Type == config.CredentialTypeKeyring {
+				source = m.storedSource(name, role)
+			} else if envName := cred.Values[role]; envName != "" {
+				source = m.envSource(envName)
+			}
+			roles = append(roles, role+"="+source)
+		}
+		return fmt.Sprintf("%s · %s · %s", name, cred.Type, strings.Join(roles, ", "))
+	case sectionConnections:
+		connection := m.cfg.Connections[name]
+		return fmt.Sprintf("%s · %s + %s", name, connection.Service, connection.Credential)
+	case sectionDefaults:
+		return fmt.Sprintf("%s → %s", name, m.cfg.Defaults.Connections[name])
+	default:
+		return name
+	}
+}
+
+func joinCards(left, right string) string {
+	leftLines, rightLines := strings.Split(left, "\n"), strings.Split(right, "\n")
+	lines := make([]string, min(len(leftLines), len(rightLines)))
+	for i := range lines {
+		lines[i] = leftLines[i] + " " + rightLines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *Model) clipLine(line string) string { return clipCells(line, max(m.width, 1)) }
+
+func (m *Model) boundView(view string) string {
+	lines := strings.Split(view, "\n")
+	if m.height > 0 && len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	for i := range lines {
+		lines[i] = m.clipLine(lines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func clipCells(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range text {
+		cells := lipgloss.Width(string(r))
+		if used+cells > width {
+			break
+		}
+		b.WriteRune(r)
+		used += cells
+	}
+	return b.String()
+}
+
+func truncateCells(text string, width int) string {
+	if lipgloss.Width(text) <= width {
+		return text
+	}
+	if width <= 0 {
+		return ""
+	}
+	if width == 1 {
+		return "…"
+	}
+	return clipCells(text, width-1) + "…"
+}
+
+func wrapCells(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var lines []string
+	for text != "" {
+		line := clipCells(text, width)
+		if line == "" {
+			break
+		}
+		lines = append(lines, line)
+		text = strings.TrimPrefix(text, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func padLine(text string, width int) string {
+	return text + strings.Repeat(" ", max(width-lipgloss.Width(text), 0))
 }
 
 func (m *Model) nextStep() string {

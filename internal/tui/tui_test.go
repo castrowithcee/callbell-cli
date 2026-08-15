@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
@@ -120,10 +121,7 @@ func clearField(t *testing.T, m *Model) {
 func openSectionByName(t *testing.T, m *Model, s section) {
 	t.Helper()
 	m.screen, m.cursor = screenMenu, 0
-	for i := 0; i < int(s); i++ {
-		press(t, m, "down")
-	}
-	pump(t, m, "enter")
+	pump(t, m, string(rune('1'+s)))
 	if m.section != s {
 		t.Fatalf("section = %v, want %v", m.section, s)
 	}
@@ -246,13 +244,21 @@ func TestFullConfigurationFlow(t *testing.T) {
 func TestNavigation(t *testing.T) {
 	m, _, _ := newModel(t)
 
-	t.Run("the menu wraps around", func(t *testing.T) {
+	t.Run("the grid wraps in each direction", func(t *testing.T) {
 		m.screen, m.cursor = screenMenu, 0
 		press(t, m, "up")
-		if m.cursor != int(sectionCount)-1 {
-			t.Errorf("cursor = %d, want %d", m.cursor, int(sectionCount)-1)
+		if m.cursor != int(sectionConnections) {
+			t.Errorf("cursor = %d, want Connections", m.cursor)
 		}
 		press(t, m, "down")
+		if m.cursor != 0 {
+			t.Errorf("cursor = %d, want 0", m.cursor)
+		}
+		press(t, m, "left")
+		if m.cursor != int(sectionCredentials) {
+			t.Errorf("cursor = %d, want Credentials", m.cursor)
+		}
+		press(t, m, "right")
 		if m.cursor != 0 {
 			t.Errorf("cursor = %d, want 0", m.cursor)
 		}
@@ -282,6 +288,224 @@ func TestNavigation(t *testing.T) {
 			t.Errorf("focus = %d, want 0", m.focus)
 		}
 	})
+}
+
+func TestDashboardLayoutsFitTheirTerminal(t *testing.T) {
+	m, _, _ := newEnvModel(t, map[string]string{
+		"WIKI_ID":     canaryID,
+		"WIKI_SECRET": canarySecret,
+	})
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+	addCredential(t, m, "reader", "WIKI_ID", "WIKI_SECRET")
+	addConnection(t, m, "personal", "wiki", "reader")
+	m.screen, m.cursor = screenMenu, int(sectionCredentials)
+
+	tests := []struct {
+		name         string
+		width        int
+		height       int
+		cardTopLines int
+	}{
+		{name: "wide two by two", width: 100, height: 24, cardTopLines: 2},
+		{name: "narrow single column", width: 60, height: 24, cardTopLines: 4},
+		{name: "compact overview", width: 40, height: 12, cardTopLines: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m.Update(tea.WindowSizeMsg{Width: tt.width, Height: tt.height})
+			view := m.View()
+			assertViewFits(t, view, tt.width, tt.height)
+			for _, want := range []string{"1. Services", "2. Credentials", "3. Connections", "4. Defaults"} {
+				if !strings.Contains(view, want) {
+					t.Errorf("dashboard does not contain %q:\n%s", want, view)
+				}
+			}
+			cardTopLines := 0
+			for _, line := range strings.Split(view, "\n") {
+				if strings.Contains(line, "╭") {
+					cardTopLines++
+				}
+			}
+			if cardTopLines != tt.cardTopLines {
+				t.Errorf("card top lines = %d, want %d:\n%s", cardTopLines, tt.cardTopLines, view)
+			}
+			for _, secretValue := range []string{canaryID, canarySecret} {
+				if strings.Contains(view, secretValue) {
+					t.Errorf("dashboard exposed a secret value %q:\n%s", secretValue, view)
+				}
+			}
+			if tt.width == 40 {
+				compact := strings.Join(strings.Fields(view), "")
+				path := strings.Join(strings.Fields(m.dashboardPath()), "")
+				if !strings.Contains(compact, path) {
+					t.Errorf("compact dashboard lost the config path %q:\n%s", m.dashboardPath(), view)
+				}
+				if !strings.Contains(compact, "Next:openConnectionsandpressttotest;Defaultsareoptional") {
+					t.Errorf("compact dashboard truncated the next step:\n%s", view)
+				}
+			}
+		})
+	}
+
+	// The wide cards contain actual configuration rows, not only navigation labels and counts.
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	view := m.View()
+	for _, want := range []string{"wiki · bookstack", "reader · env", "personal · wiki + reader"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("dashboard does not contain state row %q:\n%s", want, view)
+		}
+	}
+	for _, want := range []string{"server URLs", "secret sources", "service + credential", "optional choices"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("dashboard card does not explain its purpose %q:\n%s", want, view)
+		}
+	}
+
+	// A card stays fixed-size when it has more entries than rows: one real entry remains visible, the
+	// rest is explicit, and a long cell ends visibly instead of bleeding into its neighbour.
+	m.cfg.Services["archive"] = config.Service{Provider: "bookstack", BaseURL: "https://a-very-long-archive-host.example.invalid"}
+	m.cfg.Services["backup"] = config.Service{Provider: "bookstack", BaseURL: "https://backup.example.invalid"}
+	m.cfg.Services["copy"] = config.Service{Provider: "bookstack", BaseURL: "https://copy.example.invalid"}
+	for _, name := range []string{"copy-1", "copy-2", "copy-3", "copy-4"} {
+		m.cfg.Services[name] = config.Service{Provider: "bookstack", BaseURL: "https://" + name + ".example.invalid"}
+	}
+	view = m.View()
+	for _, want := range []string{"archive · bookstack", "+2 more", "…"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("overflowing dashboard card does not contain %q:\n%s", want, view)
+		}
+	}
+
+	for _, name := range []string{"copy-5"} {
+		m.cfg.Services[name] = config.Service{Provider: "bookstack", BaseURL: "https://" + name + ".example.invalid"}
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 18})
+	short := m.View()
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	tall := m.View()
+	assertViewFits(t, short, 100, 18)
+	assertViewFits(t, tall, 100, 40)
+	if !strings.Contains(short, "more") || strings.Contains(tall, "more") {
+		t.Errorf("dashboard rows did not grow with available height:\nshort:\n%s\n\ntall:\n%s", short, tall)
+	}
+	if len(strings.Split(tall, "\n")) <= len(strings.Split(short, "\n")) {
+		t.Errorf("taller dashboard did not expose more table rows")
+	}
+}
+
+func TestDashboardNavigationAndDirectSectionKeys(t *testing.T) {
+	m, _, _ := newModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	press(t, m, "down")
+	if m.cursor != int(sectionConnections) {
+		t.Fatalf("down in the 2x2 grid focused section %v, want Connections", section(m.cursor))
+	}
+	press(t, m, "right")
+	if m.cursor != int(sectionDefaults) {
+		t.Fatalf("right in the 2x2 grid focused section %v, want Defaults", section(m.cursor))
+	}
+	m.cursor = 0
+
+	for _, key := range []string{"right", "down", "left", "up", "l", "j", "h", "k", "tab", "shift+tab"} {
+		before := m.cursor
+		press(t, m, key)
+		if m.cursor == before {
+			t.Errorf("%q did not move dashboard focus", key)
+		}
+	}
+
+	press(t, m, "3")
+	if m.screen != screenList || m.section != sectionConnections {
+		t.Fatalf("3 opened screen %v section %v, want Connections list", m.screen, m.section)
+	}
+	press(t, m, "1")
+	if m.screen != screenList || m.section != sectionServices {
+		t.Fatalf("1 from a list opened screen %v section %v, want Services list", m.screen, m.section)
+	}
+
+	press(t, m, "n")
+	if m.screen != screenForm {
+		t.Fatalf("n from Services did not use the existing new form: screen %v", m.screen)
+	}
+	typeText(t, m, "2")
+	if m.section != sectionServices || m.fieldValue("name") != "2" {
+		t.Errorf("a numeric key escaped the form: section %v name %q", m.section, m.fieldValue("name"))
+	}
+
+	press(t, m, "esc", "esc", "3")
+	if m.section != sectionConnections || m.screen != screenList {
+		t.Fatalf("3 did not open Connections from the dashboard")
+	}
+	press(t, m, "n")
+	if m.screen != screenList || !strings.Contains(m.fail, "Create a service and a credential") {
+		t.Errorf("dashboard/list new did not preserve prerequisite flow: screen %v error %q", m.screen, m.fail)
+	}
+}
+
+func TestTinyTerminalIsBoundedAndResizePreservesState(t *testing.T) {
+	m, _, _ := newModel(t)
+	m.screen, m.cursor = screenMenu, int(sectionDefaults)
+
+	for _, size := range []struct{ width, height int }{
+		{39, 12}, {40, 11}, {12, 4}, {1, 1}, {0, 0}, {-4, -2},
+	} {
+		m.Update(tea.WindowSizeMsg{Width: size.width, Height: size.height})
+		view := m.View()
+		width, height := max(size.width, 1), max(size.height, 1)
+		assertViewFits(t, view, width, height)
+		if !strings.Contains(view, "q") {
+			t.Errorf("%dx%d resize view has no visible q key: %q", size.width, size.height, view)
+		}
+		press(t, m, "1", "n", "enter")
+		if m.screen != screenMenu || m.cursor != int(sectionDefaults) {
+			t.Fatalf("%dx%d changed hidden state to screen %v cursor %d", size.width, size.height,
+				m.screen, m.cursor)
+		}
+	}
+
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	if m.screen != screenMenu || m.cursor != int(sectionDefaults) {
+		t.Fatalf("resize lost dashboard state: screen %v cursor %d", m.screen, m.cursor)
+	}
+	if !strings.Contains(m.View(), "> 4. Defaults") {
+		t.Errorf("restored dashboard lost focus:\n%s", m.View())
+	}
+
+	// The resize overlay is not a new editor screen. A half-completed form remains intact behind it.
+	form, _, _ := newModel(t)
+	press(t, form, "1", "n")
+	typeText(t, form, "draft-service")
+	press(t, form, "tab")
+	focus := form.focus
+	form.Update(tea.WindowSizeMsg{Width: 40, Height: 12})
+	if view := form.View(); !strings.Contains(view, "Resize terminal") {
+		t.Errorf("40x12 form did not degrade to the bounded resize view:\n%s", view)
+	} else {
+		assertViewFits(t, view, 40, 12)
+	}
+	form.Update(tea.WindowSizeMsg{Width: 20, Height: 5})
+	press(t, form, "tab", "n", "1")
+	form.Update(tea.WindowSizeMsg{Width: 80, Height: 100})
+	if form.screen != screenForm || form.focus != focus || form.fieldValue("name") != "draft-service" {
+		t.Errorf("resize changed form state: screen %v focus %d name %q", form.screen, form.focus,
+			form.fieldValue("name"))
+	}
+	if strings.Contains(form.View(), "Resize terminal") {
+		t.Errorf("restored form still shows the resize overlay:\n%s", form.View())
+	}
+}
+
+func assertViewFits(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Errorf("view has %d lines, want at most %d:\n%s", len(lines), height, view)
+	}
+	for _, line := range lines {
+		if got := lipgloss.Width(line); got > width {
+			t.Errorf("view line has %d cells, want at most %d: %q", got, width, line)
+		}
+	}
 }
 
 // Cancelling a form writes nothing.
@@ -756,11 +980,14 @@ func TestStartsWithoutAConfigurationFile(t *testing.T) {
 		"2. Credentials",
 		"3. Connections",
 		"4. Defaults",
-		path,
+		"Config:",
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("first-run view does not contain %q:\n%s", want, view)
 		}
+	}
+	if compact := strings.Join(strings.Fields(view), ""); !strings.Contains(compact, path) {
+		t.Errorf("first-run view does not contain the config path %q:\n%s", path, view)
 	}
 	if strings.Contains(view, "Loaded") {
 		t.Errorf("a missing file is described as loaded:\n%s", view)

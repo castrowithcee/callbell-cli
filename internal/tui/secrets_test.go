@@ -670,8 +670,8 @@ func TestLongMessagesStayReadable(t *testing.T) {
 	// Every screen that carries the message, at the widths a terminal is really used at. Narrower than
 	// this the title and the label column of a form do not fit either, and neither is wrapped; that is
 	// what TestWrappedTextUsesTheReportedWidth covers, and it is deliberately not claimed here.
-	for _, width := range []int{30, 40, 60, 80, 100} {
-		m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+	for _, width := range []int{40, 60, 80, 100} {
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 80})
 		// Leaving a screen clears its message, so the failure is produced again at every width.
 		setSecret(t, m, "token-id", "canary-wrapped-9e21", false)
 		views := map[string]string{"form": m.View()}
