@@ -245,6 +245,11 @@ callbell config validate --secrets
 The command reports every problem it finds at once, on stderr, and exits with code `2`. A valid file
 produces no output and exits with `0`.
 
+A file that does not even parse is reported differently: the message names the line and the kind of
+problem, such as `line 6: unknown key`, but never the key or value it choked on. A secret can be typed
+anywhere in the file, so nothing from the file is quoted back, even where that costs a more helpful
+message.
+
 `--secrets` additionally resolves the secrets of every connection and reports where each one comes from:
 
 ```

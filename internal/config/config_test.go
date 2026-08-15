@@ -92,12 +92,12 @@ func TestDecodeRejects(t *testing.T) {
 		{
 			name:    "unknown top level key",
 			replace: [2]string{"version: 1", "version: 1\nproviders: {}"},
-			wantIn:  "field providers not found",
+			wantIn:  "line 3: unknown key",
 		},
 		{
 			name:    "unknown service key",
 			replace: [2]string{"provider: bookstack", "provider: bookstack\n    api_key: nope"},
-			wantIn:  "field api_key not found",
+			wantIn:  "line 6: unknown key",
 		},
 		{
 			name:    "unknown provider",
@@ -159,7 +159,7 @@ func TestDecodeRejects(t *testing.T) {
 		{
 			name:    "duplicate default for one domain",
 			replace: [2]string{"    knowledge: wiki", "    knowledge: wiki\n    knowledge: wiki"},
-			wantIn:  "already defined",
+			wantIn:  "line 20: duplicate key",
 		},
 		{
 			name:   "empty document",
@@ -187,6 +187,73 @@ func TestDecodeRejects(t *testing.T) {
 
 			if err == nil {
 				t.Fatal("Decode() = nil, want an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantIn) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantIn)
+			}
+		})
+	}
+}
+
+// A configuration file may hold a secret in a value or in a key, and the YAML library quotes the text it
+// choked on. No decoder error may carry that text out of the package.
+func TestADecodeErrorNeverQuotesTheFile(t *testing.T) {
+	const canary = "S3CRET-CANARY-9f2a"
+
+	tests := []struct {
+		name    string
+		replace [2]string
+		wantIn  string
+	}{
+		// The two triggers proven by an independent check of a built binary.
+		{
+			name:    "alias to an undefined anchor",
+			replace: [2]string{"token-id: WIKI_TOKEN_ID", "token-id: *" + canary},
+			wantIn:  "anchor that is not defined",
+		},
+		{
+			name:    "explicit tag the value does not satisfy",
+			replace: [2]string{"token-id: WIKI_TOKEN_ID", "token-id: !!int " + canary},
+			wantIn:  "explicit type tag",
+		},
+		{
+			name:    "explicit tag on a whole credential",
+			replace: [2]string{"    type: env", "    type: !!bool " + canary},
+			wantIn:  "explicit type tag",
+		},
+		// A key can be a secret too, and an unknown key is quoted just like a value.
+		{
+			name:    "unknown key",
+			replace: [2]string{"version: 1", "version: 1\n" + canary + ": {}"},
+			wantIn:  "unknown key",
+		},
+		{
+			name:    "duplicate key",
+			replace: [2]string{"    knowledge: wiki", "    " + canary + ": wiki\n    " + canary + ": wiki"},
+			wantIn:  "duplicate key",
+		},
+		// A plain syntax error has to keep enough diagnosis to find the place.
+		{
+			name:    "mapping value in the wrong context",
+			replace: [2]string{"base_url: https://wiki.example.invalid", canary + ": a: b"},
+			wantIn:  "line 6",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := strings.Replace(minimal, tt.replace[0], tt.replace[1], 1)
+			if in == minimal {
+				t.Fatalf("replacement %q did not apply; the fixture drifted", tt.replace[0])
+			}
+
+			_, err := Decode(strings.NewReader(in))
+
+			if err == nil {
+				t.Fatal("Decode() = nil, want an error")
+			}
+			if strings.Contains(err.Error(), canary) {
+				t.Errorf("error quotes the file: %q", err)
 			}
 			if !strings.Contains(err.Error(), tt.wantIn) {
 				t.Errorf("error = %q, want it to contain %q", err, tt.wantIn)

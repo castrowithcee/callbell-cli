@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -160,7 +161,7 @@ func Decode(r io.Reader) (*Config, error) {
 		if errors.Is(err, io.EOF) {
 			return nil, errors.New("the configuration file is empty")
 		}
-		return nil, err
+		return nil, redactDecodeError(err)
 	}
 	// A second document would silently shadow the first one.
 	if err := dec.Decode(new(Config)); !errors.Is(err, io.EOF) {
@@ -174,6 +175,58 @@ func Decode(r io.Reader) (*Config, error) {
 	// as an empty one.
 	cfg.ensure()
 	return &cfg, nil
+}
+
+// yamlLine matches the position the YAML library puts in front of a message it can locate.
+var yamlLine = regexp.MustCompile(`^line (\d+): `)
+
+// yamlProblems names the kinds of problem the library reports, keyed by a fragment of its message that
+// carries no text from the file. The first match wins.
+var yamlProblems = []struct{ match, problem string }{
+	{" not found in type ", "unknown key"},
+	{" already defined at line ", "duplicate key"},
+	{"cannot unmarshal ", "a value does not have the type its key requires"},
+	{"cannot decode ", "a value has an explicit type tag it does not satisfy"},
+	{"unknown anchor ", "a reference to an anchor that is not defined"},
+	{"value contains itself", "an anchor that refers to itself"},
+	{"invalid map key", "an unusable key"},
+}
+
+// redactDecodeError replaces a decoder error with one that names the place and the kind of problem but
+// never the text that caused it. The library quotes the offending key or value, and a user can type a
+// secret in either place, so the whole message has to be rebuilt rather than filtered.
+//
+// callbell-dev: the kinds are matched on message fragments; an unrecognized message keeps its position
+// and loses its explanation. That is the deliberate trade against quoting the file. Extend the table when
+// the library gains a message worth naming.
+func redactDecodeError(err error) error {
+	messages := []string{strings.TrimPrefix(err.Error(), "yaml: ")}
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		messages = typeErr.Errors
+	}
+
+	problems := make([]string, 0, len(messages))
+	seen := make(map[string]bool, len(messages))
+	for _, message := range messages {
+		where := ""
+		if at := yamlLine.FindStringSubmatch(message); at != nil {
+			where = at[0]
+			message = message[len(at[0]):]
+		}
+		problem := where + "the file does not parse as YAML"
+		for _, known := range yamlProblems {
+			if strings.Contains(message, known.match) {
+				problem = where + known.problem
+				break
+			}
+		}
+		if !seen[problem] {
+			seen[problem] = true
+			problems = append(problems, problem)
+		}
+	}
+	return errors.New(strings.Join(problems, "; "))
 }
 
 // Validate reports every schema and reference problem at once. Messages name configuration keys and
