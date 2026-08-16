@@ -46,7 +46,7 @@ stay free of quoting.
 | --- | --- | --- |
 | `provider` | yes | Provider type. Currently `bookstack`. |
 | `base_url` | yes | Base URL of the instance. Scheme `https`, or `http` for a local test server. |
-| `options` | no | Non-secret provider-specific options as string values. |
+| `options` | no | Non-secret provider-specific options as string values. The BookStack provider reads none of them, so an entry here has no effect today. |
 
 ### `credentials`
 
@@ -253,9 +253,9 @@ message.
 `--secrets` additionally resolves the secrets of every connection and reports where each one comes from:
 
 ```
-connection   credential    role          source                checked
-wiki         wiki-reader   token-id      environment variable
-wiki         wiki-reader   token-secret  credential store      environment variable (not set)
+CONNECTION  CREDENTIAL   ROLE          SOURCE                CHECKED
+wiki        wiki-reader  token-id      environment variable
+wiki        wiki-reader  token-secret  credential store      environment variable (not set)
 ```
 
 It prints where a secret comes from, never what it is. It is not the default because it may ask the

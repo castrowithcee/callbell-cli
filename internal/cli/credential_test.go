@@ -2,7 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -566,6 +569,149 @@ func TestCredentialSetPlaintextRefusesAWidenedFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "chmod 600 "+fallback) {
 		t.Errorf("stderr = %q, want the fix named", stderr)
+	}
+}
+
+// A secret that comes out of the credential store must not reach any stream either.
+//
+// The other two stages of the cascade are covered elsewhere: a secret from an environment variable in
+// TestKnowledgeNoCanaryInOutput, and a secret written straight into the configuration in the acceptance
+// run. This is the third stage, and it is the one that cannot be driven through a subprocess: the store of
+// the machine is off limits, so the run happens in this process with the in-process store the resolver
+// takes through its Store interface.
+//
+// The setup proves the stage really delivered rather than being skipped: the mock refuses any request that
+// does not carry exactly the stored token, and one endpoint answers with the credential echoed back, the
+// way a hostile or careless provider does.
+func TestStoredSecretNeverReachesTheOutput(t *testing.T) {
+	const (
+		storedID     = "canary-store-id-2d84f1"
+		storedSecret = "canary-store-secret-9e05ba"
+	)
+
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	// Nothing may shadow the store, or the run would prove the wrong stage.
+	t.Setenv(secret.DerivedEnvName("vault-reader", "token-id"), "")
+	t.Setenv(secret.DerivedEnvName("vault-reader", "token-secret"), "")
+
+	auth := "Token " + storedID + ":" + storedSecret
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != auth {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":401,"message":"No authorization token found on the request"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"data": []map[string]any{{"id": 1, "book_id": 7, "chapter_id": 0, "name": "Vault Runbook",
+				"slug": "vault", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"}},
+		})
+	})
+	mux.HandleFunc("/api/pages/1", func(w http.ResponseWriter, r *http.Request) {
+		// The echo: whatever the provider says about the credential must still not be published.
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"failed for ` + r.Header.Get("Authorization") + `"}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfg, []byte(fmt.Sprintf(`
+version: 1
+services:
+  wiki:
+    provider: bookstack
+    base_url: %s
+credentials:
+  vault-reader:
+    type: keyring
+connections:
+  wiki:
+    service: wiki
+    credential: vault-reader
+defaults:
+  connections:
+    knowledge: wiki
+`, server.URL)), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	store := secret.NewMemoryStore()
+	for role, value := range map[string]string{"token-id": storedID, "token-secret": storedSecret} {
+		if err := store.Set(secret.StoreKey("vault-reader", role), value); err != nil {
+			t.Fatalf("Set() = %v", err)
+		}
+	}
+
+	// Every call gets its own options, and therefore its own redactor, the way every call of the binary is
+	// its own process. A run must not be covered by what an earlier run happened to register.
+	call := func(t *testing.T, args ...string) (int, string, string) {
+		t.Helper()
+		return runWithInput(t, testOptionsIn(t, dir, store), "", append(args, "--config", cfg)...)
+	}
+
+	// The stage really is the one under test, and it really does deliver.
+	code, stdout, stderr := call(t, "config", "validate", "--secrets", "--agent")
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+	}
+	want := "connection|credential|role|source|checked\n" +
+		"wiki|vault-reader|token-id|credential store|environment variable (not set)\n" +
+		"wiki|vault-reader|token-secret|credential store|environment variable (not set)\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q,\nwant %q", stdout, want)
+	}
+
+	var seen strings.Builder
+	commands := [][]string{
+		{"config", "validate"},
+		{"config", "validate", "--secrets"},
+		{"config", "validate", "--secrets", "--agent"},
+		{"config", "validate", "--secrets", "--output", "json"},
+		{"capabilities"},
+		{"capabilities", "--agent"},
+		{"describe", "knowledge.pages.list"},
+		{"knowledge", "pages", "list"},
+		{"knowledge", "pages", "list", "--agent"},
+		{"knowledge", "pages", "list", "--output", "json"},
+		{"knowledge", "pages", "list", "--connection", "wiki"},
+		{"knowledge", "pages", "get", "1"},
+		{"knowledge", "pages", "get", "1", "--output", "json"},
+		{"credential", "delete", "vault-reader", "token-id"},
+	}
+	for _, args := range commands {
+		_, stdout, stderr := call(t, args...)
+		seen.WriteString(stdout)
+		seen.WriteString(stderr)
+		for _, canary := range []string{storedID, storedSecret} {
+			if strings.Contains(stdout, canary) {
+				t.Errorf("%v: the canary reached stdout: %q", args, stdout)
+			}
+			if strings.Contains(stderr, canary) {
+				t.Errorf("%v: the canary reached stderr: %q", args, stderr)
+			}
+		}
+	}
+
+	// The listing worked, so the mock accepted the stored token, and the echo really was echoed and
+	// really was caught.
+	if !strings.Contains(seen.String(), "Vault Runbook") {
+		t.Errorf("output = %q, want the page the stored token unlocks", seen.String())
+	}
+	if !strings.Contains(seen.String(), "[redacted]") {
+		t.Errorf("output = %q, want the redaction marker where the provider echoed the credential", seen.String())
+	}
+
+	// Nothing the runs wrote beside the configuration may carry the secret either.
+	for name, data := range filesIn(t, dir) {
+		for _, canary := range []string{storedID, storedSecret} {
+			if strings.Contains(data, canary) {
+				t.Errorf("the canary reached the file %s", name)
+			}
+		}
 	}
 }
 

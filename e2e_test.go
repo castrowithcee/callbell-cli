@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
@@ -22,6 +23,9 @@ const (
 	canaryArchiveID     = "canary-archive-id-8b2e55"
 	canaryArchiveSecret = "canary-archive-secret-1a9f6d"
 )
+
+// echoPageID is the page whose read makes the mock quote the credential back at the binary.
+const echoPageID = "13"
 
 func allCanaries() []string {
 	return []string{canaryPrimaryID, canaryPrimarySecret, canaryArchiveID, canaryArchiveSecret}
@@ -88,6 +92,15 @@ func mock(t *testing.T, wantAuth string, pages []map[string]any, content string)
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/pages/")
+		if id == echoPageID {
+			// A provider that hands the credential back in its own error message. Without it the canary
+			// check would pass on a binary that redacts nothing, because nothing would ever carry a
+			// secret towards the output in the first place.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":500,"message":"failed for ` +
+				r.Header.Get("Authorization") + `"}}`))
+			return
+		}
 		if id != "1" {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"code":404,"message":"Item not found"}}`))
@@ -257,6 +270,20 @@ defaults:
 		}
 		if got["html"] != "<p>a|b</p>\n<p>c=d</p>" {
 			t.Errorf("html = %q, want the content verbatim", got["html"])
+		}
+	})
+
+	t.Run("a provider echoing the credential does not get it published", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "knowledge", "pages", "get", echoPageID)
+
+		if code != 1 {
+			t.Errorf("exit %d, want 1", code)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, redact.Marker) {
+			t.Errorf("stderr = %q, want the credential replaced by %s", stderr, redact.Marker)
 		}
 	})
 
@@ -632,6 +659,13 @@ defaults:
 		}
 		if !strings.Contains(stdout, "Vault Runbook") {
 			t.Errorf("stdout = %q, want the page", stdout)
+		}
+
+		// The same secret, handed back by the provider: the file delivered it, and the redactor still
+		// has to keep it out of the message.
+		_, _, stderr = c.run(t, "knowledge", "pages", "get", echoPageID)
+		if !strings.Contains(stderr, redact.Marker) {
+			t.Errorf("stderr = %q, want the credential replaced by %s", stderr, redact.Marker)
 		}
 	})
 
