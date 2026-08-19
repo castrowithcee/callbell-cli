@@ -318,18 +318,19 @@ defaults:
 
 	t.Run("stream and exit code contract", func(t *testing.T) {
 		tests := []struct {
-			name string
-			args []string
-			code int
-			in   string
+			name  string
+			args  []string
+			code  int
+			in    string
+			usage string
 		}{
-			{"unknown flag", []string{"--nope"}, 2, "usage"},
-			{"unknown command", []string{"frobnicate"}, 2, "usage"},
-			{"unknown connection", []string{"knowledge", "pages", "list", "--connection", "absent"}, 2, "unknown-connection"},
-			{"empty configuration file", []string{"capabilities", "--config", "/dev/null"}, 2, "config-invalid"},
-			{"unknown capability", []string{"describe", "absent.capability"}, 2, "unsupported-capability"},
-			{"unknown field", []string{"knowledge", "pages", "list", "--fields", "absent"}, 2, "usage"},
-			{"missing page", []string{"knowledge", "pages", "get", "99"}, 1, "provider-error"},
+			{"unknown flag", []string{"--nope"}, 2, "usage", "callbell [flags]"},
+			{"unknown command", []string{"frobnicate"}, 2, "usage", "callbell [flags]"},
+			{"unknown connection", []string{"knowledge", "pages", "list", "--connection", "absent"}, 2, "unknown-connection", "callbell knowledge pages list [flags]"},
+			{"empty configuration file", []string{"capabilities", "--config", "/dev/null"}, 2, "config-invalid", "callbell capabilities [flags]"},
+			{"unknown capability", []string{"describe", "absent.capability"}, 2, "unsupported-capability", "callbell describe <capability> [flags]"},
+			{"unknown field", []string{"knowledge", "pages", "list", "--fields", "absent"}, 2, "usage", "callbell knowledge pages list [flags]"},
+			{"missing page", []string{"knowledge", "pages", "get", "99"}, 1, "provider-error", ""},
 		}
 
 		for _, tt := range tests {
@@ -344,6 +345,9 @@ defaults:
 				}
 				if !strings.HasPrefix(stderr, "callbell: "+tt.in+": ") {
 					t.Errorf("stderr = %q, want the %q code", stderr, tt.in)
+				}
+				if tt.usage != "" && !strings.Contains(stderr, "\nUsage:\n  "+tt.usage+"\n") {
+					t.Errorf("stderr = %q, want usage for %q", stderr, tt.usage)
 				}
 			})
 		}

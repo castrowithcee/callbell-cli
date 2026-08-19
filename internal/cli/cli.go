@@ -87,7 +87,7 @@ func run(cmd *cobra.Command, opts *Options, args []string, stdout, stderr io.Wri
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 
-	err := cmd.Execute()
+	executed, err := cmd.ExecuteC()
 	if err == nil {
 		return exitOK
 	}
@@ -96,7 +96,7 @@ func run(cmd *cobra.Command, opts *Options, args []string, stdout, stderr io.Wri
 	fmt.Fprintf(stderr, "callbell: %s: %s\n", codeFor(err), opts.Redactor.Error(err))
 	code := exitCode(err)
 	if code == exitUsage {
-		fmt.Fprint(stderr, cmd.UsageString())
+		fmt.Fprint(stderr, executed.UsageString())
 	}
 	return code
 }

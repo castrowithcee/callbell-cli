@@ -1,3 +1,12 @@
+---
+description: >
+  Public stream, format, escaping, projection, limit, and error-output contract for Callbell CLI.
+type: knowledge
+edit: shared
+created: 2026-08-14
+updated: 2026-08-19
+---
+
 # Output contract
 
 Callbell CLI writes requested data to stdout and everything else to stderr. Output is deterministic: the
@@ -105,9 +114,10 @@ The first line on stderr carries a provider-independent code:
 callbell: <code>: <message>
 ```
 
-A runtime error (exit `1`) is that line and nothing else. A usage error (exit `2`) is followed by the
-command's usage text, so stderr is longer than one line. Read the first line and branch on the code rather
-than on the message text.
+A runtime error (exit `1`) is that line and nothing else. A usage error (exit `2`) is followed by the usage
+text of the command that reported the error, so stderr is longer than one line. For example, an error from
+`callbell knowledge pages list` shows that command's usage rather than the root command's usage. Read the
+first line and branch on the code rather than on the message text.
 
 | Code | Meaning |
 | --- | --- |
