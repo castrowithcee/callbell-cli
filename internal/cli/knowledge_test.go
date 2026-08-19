@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -151,6 +153,136 @@ func TestKnowledgePagesList(t *testing.T) {
 			t.Errorf("stderr = %q", stderr)
 		}
 	})
+}
+
+func TestKnowledgeFieldsAreValidatedBeforeProviderCall(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 0, "data": []any{}})
+	}))
+	t.Cleanup(server.Close)
+	cfg := bookstackConfig(t, server.URL)
+
+	tests := []struct {
+		name      string
+		args      []string
+		available string
+	}{
+		{
+			name:      "list",
+			args:      []string{"knowledge", "pages", "list", "--config", cfg, "--fields", "absent"},
+			available: "id, name, slug, book_id, chapter_id, created_at, updated_at",
+		},
+		{
+			name:      "get",
+			args:      []string{"knowledge", "pages", "get", "1", "--config", cfg, "--fields", "absent"},
+			available: "id, name, slug, book_id, chapter_id, created_at, updated_at, html, markdown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, tt.args...)
+
+			if code != exitUsage {
+				t.Errorf("exit code = %d, want %d", code, exitUsage)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty", stdout)
+			}
+			want := "callbell: usage: unknown field \"absent\", available fields are " + tt.available + "\n"
+			if !strings.HasPrefix(stderr, want) {
+				t.Errorf("stderr = %q, want prefix %q", stderr, want)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Errorf("provider calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEmptyResultAcceptsDeclaredField(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 0, "data": []any{}})
+	}))
+	t.Cleanup(server.Close)
+	cfg := bookstackConfig(t, server.URL)
+
+	code, stdout, stderr := runCLI(t,
+		"knowledge", "pages", "list", "--config", cfg, "--agent", "--fields", "id")
+
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+	}
+	if stdout != "id\n" {
+		t.Errorf("stdout = %q, want the projected header", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty", stderr)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("provider calls = %d, want 1", got)
+	}
+}
+
+func TestKnowledgeCapabilityFieldsMatchResults(t *testing.T) {
+	cfg := bookstackConfig(t, pagesServer(t).URL)
+	reg := defaultRegistry()
+
+	tests := []struct {
+		name       string
+		capability string
+		args       []string
+		fields     func(string) []string
+	}{
+		{
+			name:       "list",
+			capability: capabilityPagesList,
+			args:       []string{"knowledge", "pages", "list", "--config", cfg, "--agent"},
+			fields: func(stdout string) []string {
+				return strings.Split(strings.SplitN(stdout, "\n", 2)[0], "|")
+			},
+		},
+		{
+			name:       "get",
+			capability: capabilityPagesGet,
+			args:       []string{"knowledge", "pages", "get", "1", "--config", cfg, "--agent"},
+			fields: func(stdout string) []string {
+				lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+				fields := make([]string, len(lines))
+				for i, line := range lines {
+					fields[i] = strings.SplitN(line, "=", 2)[0]
+				}
+				return fields
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, tt.args...)
+			if code != exitOK {
+				t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+			}
+
+			var declared []string
+			for _, c := range reg.Provider("bookstack") {
+				if c.Name == tt.capability {
+					declared = capabilityFieldNames(c)
+					break
+				}
+			}
+			if declared == nil {
+				t.Fatalf("capability %q is not registered", tt.capability)
+			}
+			if got := tt.fields(stdout); !reflect.DeepEqual(got, declared) {
+				t.Errorf("result fields = %v, declared fields = %v", got, declared)
+			}
+		})
+	}
 }
 
 func TestKnowledgePagesGet(t *testing.T) {

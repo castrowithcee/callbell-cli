@@ -11,10 +11,14 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
 )
 
-// domainKnowledge is the domain these commands resolve their default connection for.
-const domainKnowledge = "knowledge"
+const (
+	// domainKnowledge is the domain these commands resolve their default connection for.
+	domainKnowledge     = "knowledge"
+	capabilityPagesList = domainKnowledge + ".pages.list"
+	capabilityPagesGet  = domainKnowledge + ".pages.get"
+)
 
-func newKnowledgeCommand(opts *Options) *cobra.Command {
+func newKnowledgeCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "knowledge",
 		Short: "Read from a knowledge base",
@@ -41,6 +45,9 @@ func newKnowledgeCommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := validateCapabilityFields(reg, bookstack.Provider, capabilityPagesList, opts.Fields); err != nil {
+				return err
+			}
 			result, err := client.ListPages(c.Context(), opts.Limit, offset)
 			if err != nil {
 				return err
@@ -63,6 +70,9 @@ func newKnowledgeCommand(opts *Options) *cobra.Command {
 			}
 			client, err := openKnowledge(opts)
 			if err != nil {
+				return err
+			}
+			if err := validateCapabilityFields(reg, bookstack.Provider, capabilityPagesGet, opts.Fields); err != nil {
 				return err
 			}
 			result, err := client.GetPage(c.Context(), strconv.FormatInt(id, 10))

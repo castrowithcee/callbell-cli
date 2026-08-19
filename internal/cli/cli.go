@@ -154,7 +154,7 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		newCredentialCommand(opts),
 		newCapabilitiesCommand(opts, reg),
 		newDescribeCommand(opts, reg),
-		newKnowledgeCommand(opts),
+		newKnowledgeCommand(opts, reg),
 		newTUICommand(opts),
 	)
 

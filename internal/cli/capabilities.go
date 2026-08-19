@@ -116,18 +116,34 @@ func contractObject(c capability.Capability) output.Object {
 			arguments[i] += "!"
 		}
 	}
-	fields := make([]string, len(c.Fields))
-	for i, f := range c.Fields {
-		fields[i] = f.Name
-	}
-
 	return output.Object{Fields: []output.Field{
 		{Name: "name", Value: c.Name},
 		{Name: "risk", Value: string(c.Risk)},
 		{Name: "description", Value: c.Description},
 		{Name: "arguments", Value: strings.Join(arguments, ",")},
-		{Name: "fields", Value: strings.Join(fields, ",")},
+		{Name: "fields", Value: strings.Join(capabilityFieldNames(c), ",")},
 	}}
+}
+
+// validateCapabilityFields checks a projection against the declared contract before a provider is called.
+// Project performs the same validation again on the real result in emit, keeping the declaration honest.
+func validateCapabilityFields(reg *capability.Registry, provider, name string, fields []string) error {
+	for _, c := range reg.Provider(provider) {
+		if c.Name != name {
+			continue
+		}
+		_, err := output.Project(output.Collection{Columns: capabilityFieldNames(c)}, fields)
+		return classifyUserError(err)
+	}
+	return classifyUserError(&capability.UnsupportedError{Capability: name})
+}
+
+func capabilityFieldNames(c capability.Capability) []string {
+	fields := make([]string, len(c.Fields))
+	for i, f := range c.Fields {
+		fields[i] = f.Name
+	}
+	return fields
 }
 
 func exactlyOneArg(_ *cobra.Command, args []string) error {
