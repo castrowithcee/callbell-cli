@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
 const (
@@ -422,6 +424,79 @@ func TestKnowledgeNoCanaryInOutput(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "[redacted]") {
 		t.Errorf("stderr = %q, want the redaction marker", stderr)
+	}
+}
+
+// A successful provider response can carry the credential back as untrusted payload. The canary includes
+// characters JSON and compact escape differently, so the run proves redaction happens before encoding.
+func TestKnowledgeSuccessfulPayloadsAreRedacted(t *testing.T) {
+	const escapedCanary = `canary-"\|=secret-3d72`
+
+	auth := "Token " + canaryID + ":" + escapedCanary
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != auth {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/api/pages/1" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 1, "name": "Page", "html": "before " + escapedCanary + " after",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"data":  []map[string]any{{"id": 1, "name": "before " + escapedCanary + " after"}},
+		})
+	}))
+	defer server.Close()
+	cfg := bookstackConfig(t, server.URL)
+	t.Setenv("TEST_TOKEN_SECRET", escapedCanary)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"collection/table", []string{"knowledge", "pages", "list", "--output", "table"}},
+		{"collection/json", []string{"knowledge", "pages", "list", "--output", "json"}},
+		{"collection/compact", []string{"knowledge", "pages", "list", "--output", "compact"}},
+		{"object/table", []string{"knowledge", "pages", "get", "1", "--output", "table"}},
+		{"object/json", []string{"knowledge", "pages", "get", "1", "--output", "json"}},
+		{"object/compact", []string{"knowledge", "pages", "get", "1", "--output", "compact"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, append(tt.args, "--config", cfg)...)
+
+			if code != exitOK {
+				t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+			}
+			if strings.Contains(stdout, escapedCanary) || strings.Contains(stderr, escapedCanary) {
+				t.Errorf("the canary reached the output:\nstdout: %s\nstderr: %s", stdout, stderr)
+			}
+			if !strings.Contains(stdout, redact.Marker) {
+				t.Errorf("stdout = %q, want the redaction marker", stdout)
+			}
+			if strings.HasSuffix(tt.name, "/json") {
+				var id any
+				if strings.HasPrefix(tt.name, "object/") {
+					var record map[string]any
+					if err := json.Unmarshal([]byte(stdout), &record); err != nil {
+						t.Fatalf("stdout is not valid object JSON: %v", err)
+					}
+					id = record["id"]
+				} else {
+					var records []map[string]any
+					if err := json.Unmarshal([]byte(stdout), &records); err != nil {
+						t.Fatalf("stdout is not valid collection JSON: %v", err)
+					}
+					id = records[0]["id"]
+				}
+				if _, ok := id.(float64); !ok {
+					t.Errorf("id = %T, want a JSON number", id)
+				}
+			}
+		})
 	}
 }
 

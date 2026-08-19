@@ -186,7 +186,8 @@ func emit(c *cobra.Command, opts *Options, result output.Result) error {
 	if err != nil {
 		return classifyUserError(err)
 	}
-	return output.Encode(c.OutOrStdout(), opts.Format, output.Limit(projected, opts.Limit))
+	return output.Encode(c.OutOrStdout(), opts.Format, redactResult(opts.Redactor,
+		output.Limit(projected, opts.Limit)))
 }
 
 // emitComplete is emit for a result that must never be cut short. --limit caps how many records a listing
@@ -198,5 +199,39 @@ func emitComplete(c *cobra.Command, opts *Options, result output.Result) error {
 	if err != nil {
 		return classifyUserError(err)
 	}
-	return output.Encode(c.OutOrStdout(), opts.Format, projected)
+	return output.Encode(c.OutOrStdout(), opts.Format, redactResult(opts.Redactor, projected))
+}
+
+// redactResult removes known secrets from string values before an encoder escapes or serializes them.
+// Non-string values keep their types, and the input result stays unchanged.
+func redactResult(redactor *redact.Redactor, result output.Result) output.Result {
+	if redactor == nil {
+		return result
+	}
+
+	switch r := result.(type) {
+	case output.Collection:
+		rows := make([]output.Row, len(r.Rows))
+		for i, row := range r.Rows {
+			rows[i] = make(output.Row, len(row))
+			for name, value := range row {
+				if text, ok := value.(string); ok {
+					value = redactor.Apply(text)
+				}
+				rows[i][name] = value
+			}
+		}
+		return output.Collection{Columns: r.Columns, Rows: rows}
+	case output.Object:
+		fields := make([]output.Field, len(r.Fields))
+		for i, field := range r.Fields {
+			fields[i] = field
+			if text, ok := field.Value.(string); ok {
+				fields[i].Value = redactor.Apply(text)
+			}
+		}
+		return output.Object{Fields: fields}
+	default:
+		return result
+	}
 }

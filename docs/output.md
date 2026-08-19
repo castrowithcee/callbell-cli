@@ -135,5 +135,7 @@ first line and branch on the code rather than on the message text.
 | `provider-error` | the provider answered with something unusable |
 | `runtime` | anything else that failed while running |
 
-Secret values are removed from every message before it is shown, including from unexpected errors a
-provider raises.
+Known secret values are removed from string payload values before successful output is encoded, and from
+every error message before it is shown. This also covers a provider that returns the credential it received.
+Redaction happens before JSON or compact escaping, so those formats stay valid and cannot hide a secret
+from the redactor.

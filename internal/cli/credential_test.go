@@ -605,14 +605,20 @@ func TestStoredSecretNeverReachesTheOutput(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"total": 1,
-			"data": []map[string]any{{"id": 1, "book_id": 7, "chapter_id": 0, "name": "Vault Runbook",
+			"data": []map[string]any{{"id": 1, "book_id": 7, "chapter_id": 0,
+				"name": "Vault Runbook authenticated with " + r.Header.Get("Authorization"),
 				"slug": "vault", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"}},
 		})
 	})
 	mux.HandleFunc("/api/pages/1", func(w http.ResponseWriter, r *http.Request) {
-		// The echo: whatever the provider says about the credential must still not be published.
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"failed for ` + r.Header.Get("Authorization") + `"}}`))
+		if r.Header.Get("Authorization") != auth {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// The successful echo: whatever the provider returns as payload must still not be published.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "Vault Runbook", "html": "authenticated with " + r.Header.Get("Authorization"),
+		})
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -679,6 +685,7 @@ defaults:
 		{"knowledge", "pages", "list", "--output", "json"},
 		{"knowledge", "pages", "list", "--connection", "wiki"},
 		{"knowledge", "pages", "get", "1"},
+		{"knowledge", "pages", "get", "1", "--agent"},
 		{"knowledge", "pages", "get", "1", "--output", "json"},
 		{"credential", "delete", "vault-reader", "token-id"},
 	}
@@ -696,8 +703,7 @@ defaults:
 		}
 	}
 
-	// The listing worked, so the mock accepted the stored token, and the echo really was echoed and
-	// really was caught.
+	// The listing worked, so the mock accepted the stored token, and the successful echo really was caught.
 	if !strings.Contains(seen.String(), "Vault Runbook") {
 		t.Errorf("output = %q, want the page the stored token unlocks", seen.String())
 	}

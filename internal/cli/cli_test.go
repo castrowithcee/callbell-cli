@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/castrowithcee/callbell-cli/internal/output"
+	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
 func TestRun(t *testing.T) {
@@ -152,5 +156,86 @@ func TestOptionsAreParsed(t *testing.T) {
 	}
 	if opts.Limit != 5 {
 		t.Errorf("limit = %d, want 5", opts.Limit)
+	}
+}
+
+func TestEmitRedactsBeforeEncoding(t *testing.T) {
+	const canary = `canary-"\|=value`
+
+	tests := []struct {
+		format output.Format
+		want   string
+	}{
+		{output.FormatTable, "ID  NAME\n7   before [redacted] after\n"},
+		{output.FormatJSON, "[{\"id\":7,\"name\":\"before [redacted] after\"}]\n"},
+		{output.FormatCompact, "id|name\n7|before [redacted] after\n"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.format), func(t *testing.T) {
+			var stdout bytes.Buffer
+			cmd := &cobra.Command{}
+			cmd.SetOut(&stdout)
+			redactor := &redact.Redactor{}
+			redactor.Add(canary)
+			opts := &Options{
+				Format:   tt.format,
+				Fields:   []string{"id", "name"},
+				Limit:    1,
+				Redactor: redactor,
+			}
+			result := output.Collection{
+				Columns: []string{"name", "id", "active"},
+				Rows: []output.Row{
+					{"name": "before " + canary + " after", "id": int64(7), "active": true},
+					{"name": canary, "id": int64(8), "active": false},
+				},
+			}
+
+			if err := emit(cmd, opts, result); err != nil {
+				t.Fatalf("emit() = %v", err)
+			}
+			if got := stdout.String(); got != tt.want {
+				t.Errorf("stdout = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(stdout.String(), canary) {
+				t.Errorf("stdout leaks the secret: %q", stdout.String())
+			}
+			if tt.format == output.FormatJSON {
+				var rows []map[string]any
+				if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
+					t.Fatalf("stdout is not valid JSON: %v", err)
+				}
+				if _, ok := rows[0]["id"].(float64); !ok {
+					t.Errorf("id = %T, want a JSON number", rows[0]["id"])
+				}
+			}
+		})
+	}
+}
+
+func TestEmitCompleteRedactsWithoutApplyingLimit(t *testing.T) {
+	const canary = "complete-canary-8a14"
+
+	var stdout bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&stdout)
+	redactor := &redact.Redactor{}
+	redactor.Add(canary)
+	result := output.Collection{
+		Columns: []string{"name", "count"},
+		Rows: []output.Row{
+			{"name": canary, "count": int64(1)},
+			{"name": canary, "count": int64(2)},
+		},
+	}
+
+	if err := emitComplete(cmd, &Options{Format: output.FormatCompact, Limit: 1, Redactor: redactor}, result); err != nil {
+		t.Fatalf("emitComplete() = %v", err)
+	}
+	if got, want := stdout.String(), "name|count\n[redacted]|1\n[redacted]|2\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+	if got := result.Rows[0]["name"]; got != canary {
+		t.Errorf("input value = %q, want it unchanged", got)
 	}
 }
