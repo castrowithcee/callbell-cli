@@ -28,6 +28,10 @@ import (
 // Provider is the provider name used in the configuration.
 const Provider = "bookstack"
 
+// dataSensitivity classifies results as content and metadata from the configured BookStack instance. It
+// is deliberately provider-specific; the architecture defines no global sensitivity taxonomy.
+const dataSensitivity = "bookstack-content"
+
 // The secret roles a BookStack credential must supply.
 const (
 	roleTokenID     = "token-id"
@@ -40,12 +44,24 @@ const maxCount = 500
 // defaultTimeout bounds every request. Without it a hanging server would block the command forever.
 const defaultTimeout = 30 * time.Second
 
-// Capabilities implemented by this provider.
+// Operations implemented by this provider.
 var (
-	pagesList = capability.Capability{
-		Name:        "knowledge.pages.list",
-		Description: "List pages of a knowledge base",
-		Risk:        capability.RiskRead,
+	bookstackReadRisk = capability.Risk{
+		Effect:          capability.EffectRead,
+		Idempotency:     capability.IdempotencySafe,
+		Confirmation:    capability.ConfirmationNone,
+		OpenWorld:       true,
+		DataSensitivity: dataSensitivity,
+	}
+
+	pagesList = capability.Descriptor{
+		ID:           Provider + ".pages.list",
+		Version:      1,
+		Description:  "List pages of a knowledge base",
+		Risk:         bookstackReadRisk,
+		Provider:     Provider,
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"slug":{"type":"string"},"book_id":{"type":"integer"},"chapter_id":{"type":"integer"},"created_at":{"type":"string"},"updated_at":{"type":"string"}},"required":["id","name","slug","book_id","chapter_id","created_at","updated_at"]}}`),
 		Arguments: []capability.Argument{
 			{Name: "limit", Description: "Maximum number of pages to return; 0 returns all"},
 			{Name: "offset", Description: "Number of pages to skip"},
@@ -61,11 +77,15 @@ var (
 		},
 	}
 
-	pagesGet = capability.Capability{
-		Name:        "knowledge.pages.get",
-		Description: "Read one page of a knowledge base",
-		Risk:        capability.RiskRead,
-		Arguments:   []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
+	pagesGet = capability.Descriptor{
+		ID:           Provider + ".pages.get",
+		Version:      1,
+		Description:  "Read one page of a knowledge base",
+		Risk:         bookstackReadRisk,
+		Provider:     Provider,
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":1}},"required":["id"],"additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"slug":{"type":"string"},"book_id":{"type":"integer"},"chapter_id":{"type":"integer"},"created_at":{"type":"string"},"updated_at":{"type":"string"},"html":{"type":"string"},"markdown":{"type":"string"}},"required":["id","name","slug","book_id","chapter_id","created_at","updated_at","html","markdown"]}`),
+		Arguments:    []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
 		Fields: []capability.Field{
 			{Name: "id", Description: "Page identifier"},
 			{Name: "name", Description: "Page title"},
@@ -80,9 +100,12 @@ var (
 	}
 )
 
-// Register records this provider's capabilities.
+// Register records this provider's operations and their existing command handlers.
 func Register(reg *capability.Registry) error {
-	return reg.Register(Provider, pagesList, pagesGet)
+	return reg.Register(Provider,
+		capability.Operation{Descriptor: pagesList, Handler: (*Client).ListPages},
+		capability.Operation{Descriptor: pagesGet, Handler: (*Client).GetPage},
+	)
 }
 
 // Client talks to one BookStack instance with one credential.
@@ -361,7 +384,7 @@ func listRow(p pageJSON) output.Row {
 	}
 }
 
-func fieldNames(c capability.Capability) []string {
+func fieldNames(c capability.Descriptor) []string {
 	out := make([]string, len(c.Fields))
 	for i, f := range c.Fields {
 		out[i] = f.Name

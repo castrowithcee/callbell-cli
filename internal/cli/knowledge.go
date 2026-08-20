@@ -14,8 +14,8 @@ import (
 const (
 	// domainKnowledge is the domain these commands resolve their default connection for.
 	domainKnowledge     = "knowledge"
-	capabilityPagesList = domainKnowledge + ".pages.list"
-	capabilityPagesGet  = domainKnowledge + ".pages.get"
+	capabilityPagesList = bookstack.Provider + ".pages.list"
+	capabilityPagesGet  = bookstack.Provider + ".pages.get"
 )
 
 func newKnowledgeCommand(opts *Options, reg *capability.Registry) *cobra.Command {

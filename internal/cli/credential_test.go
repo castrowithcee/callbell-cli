@@ -679,7 +679,7 @@ defaults:
 		{"config", "validate", "--secrets", "--output", "json"},
 		{"capabilities"},
 		{"capabilities", "--agent"},
-		{"describe", "knowledge.pages.list"},
+		{"describe", "bookstack.pages.list"},
 		{"knowledge", "pages", "list"},
 		{"knowledge", "pages", "list", "--agent"},
 		{"knowledge", "pages", "list", "--output", "json"},

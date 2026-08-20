@@ -53,17 +53,17 @@ func newCapabilitiesCommand(opts *Options, reg *capability.Registry) *cobra.Comm
 			if err != nil {
 				return err
 			}
-			caps, err := cat.List(opts.Connection)
+			operations, err := cat.List(opts.Connection)
 			if err != nil {
 				return classifyUserError(err)
 			}
 
-			rows := make([]output.Row, len(caps))
-			for i, cap := range caps {
+			rows := make([]output.Row, len(operations))
+			for i, operation := range operations {
 				rows[i] = output.Row{
-					"name":        cap.Name,
-					"risk":        string(cap.Risk),
-					"description": cap.Description,
+					"name":        operation.ID,
+					"risk":        string(operation.Risk.Effect),
+					"description": operation.Description,
 				}
 			}
 			return emit(c, opts, output.Collection{
@@ -108,39 +108,39 @@ func newDescribeCommand(opts *Options, reg *capability.Registry) *cobra.Command 
 //
 // callbell-dev: argument and field prose lives in the documentation; add nested values only when a
 // provider result actually needs them.
-func contractObject(c capability.Capability) output.Object {
-	arguments := make([]string, len(c.Arguments))
-	for i, a := range c.Arguments {
+func contractObject(d capability.Descriptor) output.Object {
+	arguments := make([]string, len(d.Arguments))
+	for i, a := range d.Arguments {
 		arguments[i] = a.Name
 		if a.Required {
 			arguments[i] += "!"
 		}
 	}
 	return output.Object{Fields: []output.Field{
-		{Name: "name", Value: c.Name},
-		{Name: "risk", Value: string(c.Risk)},
-		{Name: "description", Value: c.Description},
+		{Name: "name", Value: d.ID},
+		{Name: "risk", Value: string(d.Risk.Effect)},
+		{Name: "description", Value: d.Description},
 		{Name: "arguments", Value: strings.Join(arguments, ",")},
-		{Name: "fields", Value: strings.Join(capabilityFieldNames(c), ",")},
+		{Name: "fields", Value: strings.Join(capabilityFieldNames(d), ",")},
 	}}
 }
 
 // validateCapabilityFields checks a projection against the declared contract before a provider is called.
 // Project performs the same validation again on the real result in emit, keeping the declaration honest.
 func validateCapabilityFields(reg *capability.Registry, provider, name string, fields []string) error {
-	for _, c := range reg.Provider(provider) {
-		if c.Name != name {
+	for _, operation := range reg.Provider(provider) {
+		if operation.ID != name {
 			continue
 		}
-		_, err := output.Project(output.Collection{Columns: capabilityFieldNames(c)}, fields)
+		_, err := output.Project(output.Collection{Columns: capabilityFieldNames(operation)}, fields)
 		return classifyUserError(err)
 	}
 	return classifyUserError(&capability.UnsupportedError{Capability: name})
 }
 
-func capabilityFieldNames(c capability.Capability) []string {
-	fields := make([]string, len(c.Fields))
-	for i, f := range c.Fields {
+func capabilityFieldNames(d capability.Descriptor) []string {
+	fields := make([]string, len(d.Fields))
+	for i, f := range d.Fields {
 		fields[i] = f.Name
 	}
 	return fields

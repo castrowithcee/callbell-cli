@@ -272,7 +272,7 @@ func TestKnowledgeCapabilityFieldsMatchResults(t *testing.T) {
 
 			var declared []string
 			for _, c := range reg.Provider("bookstack") {
-				if c.Name == tt.capability {
+				if c.ID == tt.capability {
 					declared = capabilityFieldNames(c)
 					break
 				}
@@ -509,7 +509,7 @@ func TestKnowledgeCapabilitiesAreDiscoverable(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 	}
-	want := "name\nknowledge.pages.get\nknowledge.pages.list\n"
+	want := "name\nbookstack.pages.get\nbookstack.pages.list\n"
 	if stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}

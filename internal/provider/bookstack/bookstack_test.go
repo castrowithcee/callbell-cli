@@ -607,10 +607,41 @@ func TestRegister(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("capabilities = %d, want 2", len(got))
 	}
-	for _, c := range got {
-		if c.Risk != capability.RiskRead {
-			t.Errorf("capability %q has risk %q, want read", c.Name, c.Risk)
-		}
+	wantRisk := capability.Risk{
+		Effect:          capability.EffectRead,
+		Idempotency:     capability.IdempotencySafe,
+		Confirmation:    capability.ConfirmationNone,
+		OpenWorld:       true,
+		DataSensitivity: dataSensitivity,
+	}
+	for _, tt := range []struct {
+		id   string
+		risk capability.Risk
+	}{
+		{Provider + ".pages.get", wantRisk},
+		{Provider + ".pages.list", wantRisk},
+	} {
+		t.Run(tt.id, func(t *testing.T) {
+			var descriptor capability.Descriptor
+			for _, candidate := range got {
+				if candidate.ID == tt.id {
+					descriptor = candidate
+					break
+				}
+			}
+			if descriptor.ID == "" {
+				t.Fatalf("operation %q is not registered", tt.id)
+			}
+			if descriptor.Risk != tt.risk {
+				t.Errorf("risk = %+v, want %+v", descriptor.Risk, tt.risk)
+			}
+			if descriptor.Provider != Provider || descriptor.Version != 1 {
+				t.Errorf("operation = %+v, want provider %q version 1", descriptor, Provider)
+			}
+			if _, _, ok := reg.Lookup(descriptor.ID); !ok {
+				t.Errorf("operation %q has no registered handler", descriptor.ID)
+			}
+		})
 	}
 }
 

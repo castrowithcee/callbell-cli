@@ -12,7 +12,7 @@ func (e *UnknownConnectionError) Error() string {
 	return fmt.Sprintf("unknown connection %q", e.Name)
 }
 
-// UnsupportedError reports that a capability is not offered. Connection is empty when no configured
+// UnsupportedError reports that an operation is not offered. Connection is empty when no configured
 // connection offers it at all.
 type UnsupportedError struct {
 	Connection string
@@ -27,7 +27,7 @@ func (e *UnsupportedError) Error() string {
 }
 
 // Catalog answers what the configured connections can do. Connections map a connection name to its
-// provider type; a provider that no connection uses contributes nothing.
+// provider ID; a provider that no connection uses contributes nothing.
 type Catalog struct {
 	registry    *Registry
 	connections map[string]string
@@ -38,9 +38,9 @@ func NewCatalog(registry *Registry, connections map[string]string) *Catalog {
 	return &Catalog{registry: registry, connections: connections}
 }
 
-// List returns the capabilities of one connection, or the deduplicated union of all configured
-// connections when connection is empty. The result is sorted by name and stable across calls.
-func (c *Catalog) List(connection string) ([]Capability, error) {
+// List returns the operations of one connection, or the deduplicated union of all configured connections
+// when connection is empty. The result is sorted by ID and stable across calls.
+func (c *Catalog) List(connection string) ([]Descriptor, error) {
 	if connection != "" {
 		provider, ok := c.connections[connection]
 		if !ok {
@@ -49,28 +49,28 @@ func (c *Catalog) List(connection string) ([]Capability, error) {
 		return c.registry.Provider(provider), nil
 	}
 
-	// Registration guarantees that one name maps to one contract, so the union deduplicates by name.
-	union := map[string]Capability{}
+	// Provider-qualified IDs let every connection of one provider share one descriptor.
+	union := map[string]Descriptor{}
 	for _, name := range sortedKeys(c.connections) {
-		for _, cap := range c.registry.Provider(c.connections[name]) {
-			union[cap.Name] = cap
+		for _, operation := range c.registry.Provider(c.connections[name]) {
+			union[operation.ID] = operation
 		}
 	}
 	return sorted(union), nil
 }
 
-// Describe returns one capability, filtered the same way as List.
-func (c *Catalog) Describe(connection, name string) (Capability, error) {
-	caps, err := c.List(connection)
+// Describe returns one operation descriptor, filtered the same way as List.
+func (c *Catalog) Describe(connection, id string) (Descriptor, error) {
+	operations, err := c.List(connection)
 	if err != nil {
-		return Capability{}, err
+		return Descriptor{}, err
 	}
-	for _, cap := range caps {
-		if cap.Name == name {
-			return cap, nil
+	for _, operation := range operations {
+		if operation.ID == id {
+			return operation, nil
 		}
 	}
-	return Capability{}, &UnsupportedError{Connection: connection, Capability: name}
+	return Descriptor{}, &UnsupportedError{Connection: connection, Capability: id}
 }
 
 func sortedKeys(m map[string]string) []string {

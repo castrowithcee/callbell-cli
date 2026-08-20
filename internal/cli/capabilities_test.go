@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -14,19 +15,43 @@ func fakeRegistry(t *testing.T) *capability.Registry {
 	t.Helper()
 	reg := capability.NewRegistry()
 	err := reg.Register("bookstack",
-		capability.Capability{
-			Name:        "knowledge.pages.list",
-			Description: "List pages",
-			Risk:        capability.RiskRead,
-			Arguments:   []capability.Argument{{Name: "limit", Description: "Maximum number of pages"}},
-			Fields:      []capability.Field{{Name: "id"}, {Name: "name"}},
+		capability.Operation{
+			Descriptor: capability.Descriptor{
+				ID:          "bookstack.pages.list",
+				Version:     1,
+				Description: "List pages",
+				Risk: capability.Risk{
+					Effect:          capability.EffectRead,
+					Idempotency:     capability.IdempotencySafe,
+					Confirmation:    capability.ConfirmationNone,
+					DataSensitivity: "test-data",
+				},
+				Provider:     "bookstack",
+				InputSchema:  json.RawMessage(`{"type":"object"}`),
+				OutputSchema: json.RawMessage(`{"type":"array"}`),
+				Arguments:    []capability.Argument{{Name: "limit", Description: "Maximum number of pages"}},
+				Fields:       []capability.Field{{Name: "id"}, {Name: "name"}},
+			},
+			Handler: "list",
 		},
-		capability.Capability{
-			Name:        "knowledge.pages.get",
-			Description: "Read one page",
-			Risk:        capability.RiskRead,
-			Arguments:   []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
-			Fields:      []capability.Field{{Name: "html"}},
+		capability.Operation{
+			Descriptor: capability.Descriptor{
+				ID:          "bookstack.pages.get",
+				Version:     1,
+				Description: "Read one page",
+				Risk: capability.Risk{
+					Effect:          capability.EffectRead,
+					Idempotency:     capability.IdempotencySafe,
+					Confirmation:    capability.ConfirmationNone,
+					DataSensitivity: "test-data",
+				},
+				Provider:     "bookstack",
+				InputSchema:  json.RawMessage(`{"type":"object"}`),
+				OutputSchema: json.RawMessage(`{"type":"object"}`),
+				Arguments:    []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
+				Fields:       []capability.Field{{Name: "html"}},
+			},
+			Handler: "get",
 		},
 	)
 	if err != nil {
@@ -56,8 +81,8 @@ func TestCapabilitiesCommand(t *testing.T) {
 			t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 		}
 		want := "name|risk|description\n" +
-			"knowledge.pages.get|read|Read one page\n" +
-			"knowledge.pages.list|read|List pages\n"
+			"bookstack.pages.get|read|Read one page\n" +
+			"bookstack.pages.list|read|List pages\n"
 		if stdout != want {
 			t.Errorf("stdout = %q, want %q", stdout, want)
 		}
@@ -72,7 +97,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d", code, exitOK)
 		}
-		if !strings.Contains(stdout, "knowledge.pages.list|read|List pages") {
+		if !strings.Contains(stdout, "bookstack.pages.list|read|List pages") {
 			t.Errorf("stdout = %q", stdout)
 		}
 	})
@@ -83,7 +108,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 		}
-		want := "risk|name\nread|knowledge.pages.get\nread|knowledge.pages.list\n"
+		want := "risk|name\nread|bookstack.pages.get\nread|bookstack.pages.list\n"
 		if stdout != want {
 			t.Errorf("stdout = %q, want %q", stdout, want)
 		}
@@ -136,7 +161,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 	t.Run("limit truncates the collection", func(t *testing.T) {
 		_, stdout, _ := runDiscovery(t, "capabilities", "--config", cfg, "--agent", "--limit", "1")
 
-		want := "name|risk|description\nknowledge.pages.get|read|Read one page\n"
+		want := "name|risk|description\nbookstack.pages.get|read|Read one page\n"
 		if stdout != want {
 			t.Errorf("stdout = %q, want %q", stdout, want)
 		}
@@ -145,7 +170,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 	t.Run("table format is the human default", func(t *testing.T) {
 		_, stdout, _ := runDiscovery(t, "capabilities", "--config", cfg)
 
-		if !strings.HasPrefix(stdout, "NAME") || !strings.Contains(stdout, "knowledge.pages.list") {
+		if !strings.HasPrefix(stdout, "NAME") || !strings.Contains(stdout, "bookstack.pages.list") {
 			t.Errorf("stdout = %q, want a table with a header", stdout)
 		}
 	})
@@ -153,7 +178,7 @@ func TestCapabilitiesCommand(t *testing.T) {
 	t.Run("explicit output wins over agent mode", func(t *testing.T) {
 		_, stdout, _ := runDiscovery(t, "capabilities", "--config", cfg, "--agent", "--output", "json")
 
-		if !strings.HasPrefix(stdout, `[{"name":"knowledge.pages.get","risk":"read"`) {
+		if !strings.HasPrefix(stdout, `[{"name":"bookstack.pages.get","risk":"read"`) {
 			t.Errorf("stdout = %q, want JSON", stdout)
 		}
 	})
@@ -202,12 +227,12 @@ func TestDescribeCommand(t *testing.T) {
 	cfg := writeConfig(t, validConfig)
 
 	t.Run("full contract", func(t *testing.T) {
-		code, stdout, stderr := runDiscovery(t, "describe", "knowledge.pages.get", "--config", cfg, "--agent")
+		code, stdout, stderr := runDiscovery(t, "describe", "bookstack.pages.get", "--config", cfg, "--agent")
 
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 		}
-		want := "name=knowledge.pages.get\n" +
+		want := "name=bookstack.pages.get\n" +
 			"risk=read\n" +
 			"description=Read one page\n" +
 			"arguments=id!\n" +
@@ -218,12 +243,12 @@ func TestDescribeCommand(t *testing.T) {
 	})
 
 	t.Run("short contract", func(t *testing.T) {
-		code, stdout, _ := runDiscovery(t, "describe", "--short", "knowledge.pages.get", "--config", cfg, "--agent")
+		code, stdout, _ := runDiscovery(t, "describe", "--short", "bookstack.pages.get", "--config", cfg, "--agent")
 
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d", code, exitOK)
 		}
-		if want := "summary=read knowledge.pages.get(id)\n"; stdout != want {
+		if want := "summary=read bookstack.pages.get(id)\n"; stdout != want {
 			t.Errorf("stdout = %q, want %q", stdout, want)
 		}
 	})
@@ -243,7 +268,7 @@ func TestDescribeCommand(t *testing.T) {
 	})
 
 	t.Run("unknown connection is a different error", func(t *testing.T) {
-		_, _, stderr := runDiscovery(t, "describe", "knowledge.pages.get", "--connection", "absent", "--config", cfg)
+		_, _, stderr := runDiscovery(t, "describe", "bookstack.pages.get", "--connection", "absent", "--config", cfg)
 
 		if !strings.Contains(stderr, `unknown connection "absent"`) {
 			t.Errorf("stderr = %q, want the unknown-connection error", stderr)
@@ -271,7 +296,7 @@ func TestDefaultRegistry(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("provider capabilities = %v, want the two BookStack capabilities", got)
 	}
-	if got[0].Name != "knowledge.pages.get" || got[1].Name != "knowledge.pages.list" {
+	if got[0].ID != "bookstack.pages.get" || got[1].ID != "bookstack.pages.list" {
 		t.Errorf("capabilities = %v", got)
 	}
 }

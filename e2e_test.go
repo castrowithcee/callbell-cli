@@ -214,19 +214,19 @@ defaults:
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
-		want := "name\nknowledge.pages.get\nknowledge.pages.list\n"
+		want := "name\nbookstack.pages.get\nbookstack.pages.list\n"
 		if stdout != want {
 			t.Errorf("stdout = %q, want %q", stdout, want)
 		}
 	})
 
 	t.Run("a capability describes itself", func(t *testing.T) {
-		code, stdout, _ := c.run(t, "describe", "knowledge.pages.list", "--agent")
+		code, stdout, _ := c.run(t, "describe", "bookstack.pages.list", "--agent")
 
 		if code != 0 {
 			t.Fatalf("exit %d", code)
 		}
-		for _, want := range []string{"name=knowledge.pages.list", "risk=read", "fields=id,name,slug"} {
+		for _, want := range []string{"name=bookstack.pages.list", "risk=read", "fields=id,name,slug"} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 			}
@@ -513,7 +513,7 @@ defaults:
 				{"config", "validate"},
 				{"capabilities"},
 				{"capabilities", "--agent"},
-				{"describe", "knowledge.pages.list"},
+				{"describe", "bookstack.pages.list"},
 				{"knowledge", "pages", "list"},
 				{"knowledge", "pages", "list", "--agent"},
 				{"knowledge", "pages", "list", "--output", "json"},
