@@ -640,7 +640,7 @@ connections:
     credential: vault-reader
 defaults:
   connections:
-    knowledge: wiki
+    bookstack: wiki
 `, server.URL)), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -654,13 +654,13 @@ defaults:
 
 	// Every call gets its own options, and therefore its own redactor, the way every call of the binary is
 	// its own process. A run must not be covered by what an earlier run happened to register.
-	call := func(t *testing.T, args ...string) (int, string, string) {
+	call := func(t *testing.T, input string, args ...string) (int, string, string) {
 		t.Helper()
-		return runWithInput(t, testOptionsIn(t, dir, store), "", append(args, "--config", cfg)...)
+		return runWithInput(t, testOptionsIn(t, dir, store), input, append(args, "--config", cfg)...)
 	}
 
 	// The stage really is the one under test, and it really does deliver.
-	code, stdout, stderr := call(t, "config", "validate", "--secrets", "--agent")
+	code, stdout, stderr := call(t, "", "config", "validate", "--secrets", "--agent")
 	if code != exitOK {
 		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 	}
@@ -672,24 +672,25 @@ defaults:
 	}
 
 	var seen strings.Builder
-	commands := [][]string{
-		{"config", "validate"},
-		{"config", "validate", "--secrets"},
-		{"config", "validate", "--secrets", "--agent"},
-		{"config", "validate", "--secrets", "--output", "json"},
-		{"capabilities"},
-		{"capabilities", "--agent"},
-		{"knowledge", "pages", "list"},
-		{"knowledge", "pages", "list", "--agent"},
-		{"knowledge", "pages", "list", "--output", "json"},
-		{"knowledge", "pages", "list", "--connection", "wiki"},
-		{"knowledge", "pages", "get", "1"},
-		{"knowledge", "pages", "get", "1", "--agent"},
-		{"knowledge", "pages", "get", "1", "--output", "json"},
-		{"credential", "delete", "vault-reader", "token-id"},
+	commands := []struct {
+		input string
+		args  []string
+	}{
+		{"", []string{"config", "validate"}},
+		{"", []string{"config", "validate", "--secrets"}},
+		{"", []string{"config", "validate", "--secrets", "--agent"}},
+		{"", []string{"config", "validate", "--secrets", "--output", "json"}},
+		{"", []string{"tools"}},
+		{"", []string{"tools", "--output", "json"}},
+		{"", []string{"tool", "bookstack.pages.list"}},
+		{"", []string{"invoke", "bookstack.pages.list"}},
+		{"", []string{"invoke", "bookstack.pages.list", "--connection", "wiki"}},
+		{`{"id":1}`, []string{"invoke", "bookstack.pages.get"}},
+		{"", []string{"credential", "delete", "vault-reader", "token-id"}},
 	}
-	for _, args := range commands {
-		_, stdout, stderr := call(t, args...)
+	for _, tt := range commands {
+		args := tt.args
+		_, stdout, stderr := call(t, tt.input, args...)
 		seen.WriteString(stdout)
 		seen.WriteString(stderr)
 		for _, canary := range []string{storedID, storedSecret} {

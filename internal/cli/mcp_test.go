@@ -127,7 +127,8 @@ func TestMCPToolsUseApplicationCoreContracts(t *testing.T) {
 	if len(searchResult.Operations) != 2 {
 		t.Fatalf("search operations = %d, want 2", len(searchResult.Operations))
 	}
-	assertJSONCLIParity(t, path, "search", searchRequest, search.Structured)
+	assertMCPParity(t, runFakeCLIJSON(t, "", "tools", "--query", "page", "--config", path, "--output", "json"), "tools",
+		search.Structured, "operations")
 
 	describe := toolResultFrom(t, responses[`"describe"`])
 	var described application.DescribeResponse
@@ -136,7 +137,9 @@ func TestMCPToolsUseApplicationCoreContracts(t *testing.T) {
 		!reflect.DeepEqual(described.Connections, []string{"wiki"}) {
 		t.Fatalf("describe = %+v, structured = %+v", describe, described)
 	}
-	assertJSONCLIParity(t, path, "describe", describeRequest, describe.Structured)
+	describedByCLI := runFakeCLIJSON(t, "", "tool", "bookstack.pages.get", "--config", path, "--output", "json")
+	assertMCPParity(t, describedByCLI, "tool", describe.Structured, "operation")
+	assertMCPParity(t, describedByCLI, "connections", describe.Structured, "connections")
 
 	invoke := toolResultFrom(t, responses[`"invoke"`])
 	var invoked application.InvokeResponse
@@ -148,7 +151,8 @@ func TestMCPToolsUseApplicationCoreContracts(t *testing.T) {
 	if invoke.IsError || invoked.Operation != "bookstack.pages.get" || providerResult["html"] != "<p>Page</p>" {
 		t.Fatalf("invoke = %+v, structured = %+v", invoke, invoked)
 	}
-	assertJSONCLIParity(t, path, "invoke", invokeRequest, invoke.Structured)
+	assertMCPParity(t, runFakeCLIJSON(t, "{}", "invoke", "bookstack.pages.get", "--connection", "wiki",
+		"--config", path), "data", invoke.Structured, "")
 
 	for _, result := range []mcpToolResult{search, describe, invoke} {
 		var textValue any
@@ -179,7 +183,7 @@ func TestMCPAndJSONCLIErrorCodeParity(t *testing.T) {
 	}
 	mcpCode, _, _ := strings.Cut(mcpResult.Content[0].Text, ":")
 
-	code, stdout, stderr := runAgentDiscovery(t, request, "describe", "--config", path)
+	code, stdout, stderr := runFakeCLI(t, "tool", "absent.operation.get", "--config", path)
 	if code != exitUsage || stdout != "" {
 		t.Fatalf("JSON CLI exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -521,28 +525,40 @@ func encodeResponses(t *testing.T, responses map[string]decodedMCPResponse) stri
 	return string(encoded)
 }
 
-func assertJSONCLIParity(t *testing.T, path, command, request string, mcpData json.RawMessage) {
+// runFakeCLIJSON runs one public CLI command with the fake registry and returns its JSON document.
+func runFakeCLIJSON(t *testing.T, input string, args ...string) []byte {
 	t.Helper()
-	code, stdout, stderr := runAgentDiscovery(t, request, command, "--config", path)
+	code, stdout, stderr := runFakeCLIInput(t, input, args...)
 	if code != exitOK || stderr != "" {
-		t.Fatalf("JSON CLI %s exit=%d stderr=%q", command, code, stderr)
+		t.Fatalf("CLI %v exit=%d stderr=%q", args, code, stderr)
 	}
-	var envelope struct {
-		Data json.RawMessage `json:"data"`
+	return []byte(stdout)
+}
+
+// assertMCPParity proves that the public tool CLI and the fixed MCP broker tool publish the same data. The
+// CLI document names it in the tool taxonomy, the broker in the core contract; the payload is identical.
+func assertMCPParity(t *testing.T, cliDocument []byte, cliKey string, mcpDocument json.RawMessage, mcpKey string) {
+	t.Helper()
+	cliValue, mcpValue := jsonMember(t, cliDocument, cliKey), jsonMember(t, mcpDocument, mcpKey)
+	if !jsonEqual(cliValue, mcpValue) {
+		t.Fatalf("CLI %q = %s, MCP %q = %s", cliKey, cliValue, mcpKey, mcpValue)
 	}
-	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
-		t.Fatalf("decode JSON CLI %s envelope: %v", command, err)
+}
+
+func jsonMember(t *testing.T, document json.RawMessage, key string) json.RawMessage {
+	t.Helper()
+	if key == "" {
+		return document
 	}
-	var cliValue, mcpValue any
-	if err := json.Unmarshal(envelope.Data, &cliValue); err != nil {
-		t.Fatalf("decode JSON CLI %s data: %v", command, err)
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(document, &members); err != nil {
+		t.Fatalf("document %s is not a JSON object: %v", document, err)
 	}
-	if err := json.Unmarshal(mcpData, &mcpValue); err != nil {
-		t.Fatalf("decode MCP %s structuredContent: %v", command, err)
+	member, ok := members[key]
+	if !ok {
+		t.Fatalf("document %s has no member %q", document, key)
 	}
-	if !reflect.DeepEqual(cliValue, mcpValue) {
-		t.Fatalf("%s differs: JSON CLI=%#v MCP=%#v", command, cliValue, mcpValue)
-	}
+	return member
 }
 
 type mcpFailWriter struct{ err error }

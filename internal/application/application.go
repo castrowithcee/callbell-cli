@@ -76,8 +76,25 @@ type SearchResponse struct {
 	Operations []SearchHit `json:"operations"`
 }
 
-// Search performs deterministic local discovery and never resolves credentials or calls a provider.
+// Search performs deterministic local discovery and never resolves credentials or calls a provider. Its
+// response stays bounded: an omitted, non-positive, or oversized limit becomes maxSearchResults.
 func (c *Core) Search(request SearchRequest) (SearchResponse, error) {
+	limit := request.Limit
+	if limit <= 0 || limit > maxSearchResults {
+		limit = maxSearchResults
+	}
+	return c.catalog(request, limit)
+}
+
+// Tools returns the same discovery view as Search over the complete local catalog. The CLI catalog view
+// answers what this installation offers, so a truncated answer would read as a complete one; the bounded
+// Search response stays the contract of the request-bound agent surface.
+func (c *Core) Tools(request SearchRequest) (SearchResponse, error) {
+	return c.catalog(request, 0)
+}
+
+// catalog filters the registry deterministically. A limit of zero or less returns every match.
+func (c *Core) catalog(request SearchRequest, limit int) (SearchResponse, error) {
 	if request.Effect != "" && !validEffect(request.Effect) {
 		return SearchResponse{}, &InvalidRequestError{Message: fmt.Sprintf("unknown effect %q", request.Effect)}
 	}
@@ -91,10 +108,6 @@ func (c *Core) Search(request SearchRequest) (SearchResponse, error) {
 		selectedProvider = resolved.Provider
 	}
 
-	limit := request.Limit
-	if limit <= 0 || limit > maxSearchResults {
-		limit = maxSearchResults
-	}
 	terms := strings.Fields(strings.ToLower(request.Query))
 	hits := make([]SearchHit, 0)
 	for _, descriptor := range c.registry.All() {

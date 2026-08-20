@@ -79,8 +79,9 @@ connections:
     credential: telegram-notifier
     target: "-1002222222222"
 
-# Defaults are useful for read operations. Confirmed Telegram sends deliberately ignore defaults and
-# require the connection in the exact invoke request.
+# Defaults are useful for read operations. The key is a tool namespace such as bookstack, or a complete
+# tool ID such as bookstack.pages.list when one tool needs its own route. Confirmed Telegram sends
+# deliberately ignore defaults and require the connection in the exact invoke request.
 defaults:
   connections:
-    knowledge: wiki
+    bookstack: wiki

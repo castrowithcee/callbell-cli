@@ -45,6 +45,63 @@ func TestSearchAndDescribeAreLocalAndDeterministic(t *testing.T) {
 	}
 }
 
+// Search stays bounded for the request-bound agent surface, while Tools answers the complete catalog the
+// CLI publishes. Both apply the same filters to the same data.
+func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
+	registry := capability.NewRegistry()
+	if err := registry.RegisterProvider(config.ProviderMetadata{ID: "fake", Name: "Fake"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	operations := make([]capability.Operation, maxSearchResults+7)
+	for i := range operations {
+		operations[i] = capability.Operation{
+			Descriptor: capability.Descriptor{
+				ID: "fake.object" + strconv.Itoa(i) + ".list", Version: 1, Provider: "fake",
+				Description: "List objects", Tags: []string{"listing"},
+				Risk: capability.Risk{
+					Effect: capability.EffectRead, Idempotency: capability.IdempotencySafe,
+					Confirmation: capability.ConfirmationNone, DataSensitivity: "test",
+				},
+				InputSchema:  json.RawMessage(`{"type":"object"}`),
+				OutputSchema: json.RawMessage(`{"type":"array"}`),
+			},
+			Handler: func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor,
+				json.RawMessage) (any, error) {
+				return []any{}, nil
+			},
+		}
+	}
+	if err := registry.Register("fake", operations...); err != nil {
+		t.Fatal(err)
+	}
+	core := New(registry, &config.Config{}, nil, &redact.Redactor{})
+
+	searched, err := core.Search(SearchRequest{})
+	if err != nil {
+		t.Fatalf("Search() = %v", err)
+	}
+	if len(searched.Operations) != maxSearchResults {
+		t.Errorf("Search() = %d operations, want the bounded %d", len(searched.Operations), maxSearchResults)
+	}
+	listed, err := core.Tools(SearchRequest{})
+	if err != nil {
+		t.Fatalf("Tools() = %v", err)
+	}
+	if len(listed.Operations) != len(operations) {
+		t.Errorf("Tools() = %d operations, want %d", len(listed.Operations), len(operations))
+	}
+	if !reflect.DeepEqual(listed.Operations[:maxSearchResults], searched.Operations) {
+		t.Error("Tools() and Search() disagree about the operations they both return")
+	}
+	filtered, err := core.Tools(SearchRequest{Query: "object3.list listing"})
+	if err != nil || len(filtered.Operations) != 1 || filtered.Operations[0].ID != "fake.object3.list" {
+		t.Errorf("Tools(query) = %+v, %v", filtered.Operations, err)
+	}
+	if _, err := core.Tools(SearchRequest{Effect: "invented"}); err == nil {
+		t.Error("Tools(unknown effect) = nil error")
+	}
+}
+
 func TestInvokeConnectionSelection(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -185,7 +185,7 @@ connections:
     credential: archive-reader
 defaults:
   connections:
-    knowledge: primary
+    bookstack: primary
 `, primary.URL, archive.URL)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("writing the configuration: %v", err)
@@ -217,20 +217,29 @@ defaults:
 		}
 	})
 
-	t.Run("capabilities are discovered", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "capabilities", "--agent", "--fields", "name")
+	t.Run("the tool catalog is discovered", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "tools")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
-		want := "name\nbookstack.pages.get\nbookstack.pages.list\n"
-		if stdout != want {
-			t.Errorf("stdout = %q, want %q", stdout, want)
+		// Every compiled tool is listed with the connections that can run it, so a tool without a
+		// configured route is visible as exactly that instead of silently missing.
+		if !strings.HasPrefix(stdout, "tools[3]:\n") {
+			t.Errorf("stdout = %q, want a TOON catalog of the compiled tools", stdout)
+		}
+		for _, want := range []string{
+			"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
+			"connections[2]: archive,primary", "connections: []",
+		} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+			}
 		}
 	})
 
-	t.Run("a capability describes itself", func(t *testing.T) {
-		code, stdout, _ := c.runInput(t, `{"operation":"bookstack.pages.list"}`, "describe")
+	t.Run("a tool describes itself", func(t *testing.T) {
+		code, stdout, _ := c.run(t, "tool", "bookstack.pages.list", "--output", "json")
 
 		if code != 0 {
 			t.Fatalf("exit %d", code)
@@ -242,9 +251,9 @@ defaults:
 		}
 	})
 
-	t.Run("invoke dispatches a known operation directly", func(t *testing.T) {
-		request := `{"operation":"bookstack.pages.get","connection":"primary","arguments":{"id":1}}`
-		code, stdout, stderr := c.runInput(t, request, "invoke")
+	t.Run("invoke dispatches a known tool directly", func(t *testing.T) {
+		code, stdout, stderr := c.runInput(t, `{"id":1}`, "invoke", "bookstack.pages.get",
+			"--connection", "primary")
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
@@ -266,8 +275,8 @@ defaults:
 		}
 	})
 
-	t.Run("the domain default selects a connection", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--agent")
+	t.Run("the provider default selects a connection", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -278,7 +287,7 @@ defaults:
 	})
 
 	t.Run("an explicit connection reaches the other instance", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--connection", "archive", "--agent")
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list", "--connection", "archive")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -289,14 +298,14 @@ defaults:
 	})
 
 	t.Run("one page is read", func(t *testing.T) {
-		code, stdout, _ := c.run(t, "knowledge", "pages", "get", "1", "--output", "json")
+		code, stdout, _ := c.runInput(t, `{"id":1}`, "invoke", "bookstack.pages.get")
 
 		if code != 0 {
 			t.Fatalf("exit %d", code)
 		}
-		var got map[string]any
-		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
-			t.Fatalf("stdout is not JSON: %v", err)
+		got, ok := jsonCLIData(t, stdout).(map[string]any)["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("stdout = %q, want an invoke envelope with a page result", stdout)
 		}
 		if _, ok := got["id"].(float64); !ok {
 			t.Errorf("id = %T, want a JSON number", got["id"])
@@ -307,7 +316,7 @@ defaults:
 	})
 
 	t.Run("a provider echoing the credential does not get it published", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "get", echoPageID)
+		code, stdout, stderr := c.runInput(t, `{"id":`+echoPageID+`}`, "invoke", "bookstack.pages.get")
 
 		if code != 1 {
 			t.Errorf("exit %d, want 1", code)
@@ -320,30 +329,29 @@ defaults:
 		}
 	})
 
-	t.Run("all three formats render the same result", func(t *testing.T) {
-		_, table, _ := c.run(t, "knowledge", "pages", "list", "--output", "table")
-		_, jsonOut, _ := c.run(t, "knowledge", "pages", "list", "--output", "json")
-		_, compact, _ := c.run(t, "knowledge", "pages", "list", "--agent")
+	t.Run("both discovery formats carry the same catalog", func(t *testing.T) {
+		_, toon, _ := c.run(t, "tool", "bookstack.pages.list")
+		_, jsonOut, _ := c.run(t, "tool", "bookstack.pages.list", "--output", "json")
 
-		if !strings.HasPrefix(table, "ID") || !strings.Contains(table, "Primary Runbook") {
-			t.Errorf("table = %q, want a header and the data", table)
+		var contract map[string]any
+		if err := json.Unmarshal([]byte(jsonOut), &contract); err != nil {
+			t.Fatalf("json = %q (%v)", jsonOut, err)
 		}
-		var rows []map[string]any
-		if err := json.Unmarshal([]byte(jsonOut), &rows); err != nil || len(rows) != 2 {
-			t.Errorf("json = %q (%v)", jsonOut, err)
+		if contract["tool"] == nil || contract["connections"] == nil {
+			t.Errorf("json = %q, want the tool contract and its connections", jsonOut)
 		}
-		if !strings.HasPrefix(compact, "id|name|slug|") {
-			t.Errorf("compact = %q, want the header line", compact)
+		if !strings.Contains(toon, "id: bookstack.pages.list") || strings.Contains(toon, "\r") {
+			t.Errorf("toon = %q, want an LF TOON contract", toon)
 		}
-		if len(compact) >= len(jsonOut) {
-			t.Errorf("compact is %d bytes, json is %d bytes", len(compact), len(jsonOut))
+		if len(toon) >= len(jsonOut) {
+			t.Errorf("toon is %d bytes, json is %d bytes", len(toon), len(jsonOut))
 		}
 	})
 
 	t.Run("repeated calls are byte identical", func(t *testing.T) {
-		_, first, _ := c.run(t, "knowledge", "pages", "list", "--agent")
+		_, first, _ := c.run(t, "tools")
 		for i := 0; i < 3; i++ {
-			if _, got, _ := c.run(t, "knowledge", "pages", "list", "--agent"); got != first {
+			if _, got, _ := c.run(t, "tools"); got != first {
 				t.Fatalf("run %d = %q, want %q", i+2, got, first)
 			}
 		}
@@ -360,11 +368,12 @@ defaults:
 		}{
 			{"unknown flag", []string{"--nope"}, "", 2, "usage", "callbell [flags]"},
 			{"unknown command", []string{"frobnicate"}, "", 2, "usage", "callbell [flags]"},
-			{"unknown connection", []string{"knowledge", "pages", "list", "--connection", "absent"}, "", 2, "unknown-connection", "callbell knowledge pages list [flags]"},
-			{"empty configuration file", []string{"capabilities", "--config", "/dev/null"}, "", 2, "config-invalid", "callbell capabilities [flags]"},
-			{"unknown operation", []string{"describe"}, `{"operation":"absent.capability"}`, 2, "unknown-operation", "callbell describe [flags]"},
-			{"unknown field", []string{"knowledge", "pages", "list", "--fields", "absent"}, "", 2, "usage", "callbell knowledge pages list [flags]"},
-			{"missing page", []string{"knowledge", "pages", "get", "99"}, "", 1, "provider-error", ""},
+			{"unknown connection", []string{"invoke", "bookstack.pages.list", "--connection", "absent"}, "", 2, "unknown-connection", "callbell invoke <tool-id> [flags]"},
+			{"empty configuration file", []string{"tools", "--config", "/dev/null"}, "", 2, "config-invalid", "callbell tools [namespace] [flags]"},
+			{"unknown tool", []string{"tool", "absent.pages.get"}, "", 2, "unknown-operation", "callbell tool <tool-id> [flags]"},
+			{"unknown namespace", []string{"tools", "absent"}, "", 2, "usage", "callbell tools [namespace] [flags]"},
+			{"unknown tool verb", []string{"tool", "show", "bookstack.pages.list"}, "", 2, "usage", "callbell tool <tool-id> [flags]"},
+			{"missing page", []string{"invoke", "bookstack.pages.get"}, `{"id":99}`, 1, "provider-error", ""},
 		}
 
 		for _, tt := range tests {
@@ -396,7 +405,7 @@ defaults:
 			}
 		}
 
-		code, stdout, stderr := wrong.run(t, "knowledge", "pages", "list", "--connection", "archive")
+		code, stdout, stderr := wrong.run(t, "invoke", "bookstack.pages.list", "--connection", "archive")
 
 		if code != 1 {
 			t.Errorf("exit %d, want 1", code)
@@ -416,7 +425,7 @@ defaults:
 			secret.StoreSelector + "=none",
 		}
 
-		code, stdout, stderr := bare.run(t, "knowledge", "pages", "list")
+		code, stdout, stderr := bare.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 2 {
 			t.Errorf("exit %d, want 2", code)
@@ -556,6 +565,37 @@ func decodeMCP(t *testing.T, stdout string) map[string]mcpResponse {
 	return responses
 }
 
+// jsonCLIDocument runs one public CLI command and returns its JSON document.
+func jsonCLIDocument(t *testing.T, c *runner, input string, args ...string) any {
+	t.Helper()
+	code, stdout, stderr := c.runInput(t, input, args...)
+	if code != 0 || stderr != "" {
+		t.Fatalf("CLI %v exit=%d stderr=%q", args, code, stderr)
+	}
+	var value any
+	if err := json.Unmarshal([]byte(stdout), &value); err != nil {
+		t.Fatalf("decoding CLI output %q: %v", stdout, err)
+	}
+	return value
+}
+
+// member returns one named member of a decoded JSON object; an empty name returns the document itself.
+func member(t *testing.T, document any, name string) any {
+	t.Helper()
+	if name == "" {
+		return document
+	}
+	object, ok := document.(map[string]any)
+	if !ok {
+		t.Fatalf("document %#v is not a JSON object", document)
+	}
+	value, ok := object[name]
+	if !ok {
+		t.Fatalf("document %#v has no member %q", document, name)
+	}
+	return value
+}
+
 func jsonCLIData(t *testing.T, stdout string) any {
 	t.Helper()
 	var envelope struct {
@@ -680,19 +720,23 @@ defaults: {}
 		}
 	})
 
-	t.Run("JSON CLI and MCP share discovery and BookStack invoke", func(t *testing.T) {
+	t.Run("the tool CLI and MCP share one core", func(t *testing.T) {
+		// The public CLI names the tool taxonomy, the fixed broker tools name the core contract. Both
+		// answer from the same application core, so their payloads must be identical.
+		cli := map[string]any{
+			"search": member(t, jsonCLIDocument(t, c, "", "tools", "bookstack",
+				"--query", "pages", "--output", "json"), "tools"),
+			"describe": member(t, jsonCLIDocument(t, c, "", "tool", "bookstack.pages.get",
+				"--output", "json"), "tool"),
+			"connections": member(t, jsonCLIDocument(t, c, "", "tool", "bookstack.pages.get",
+				"--output", "json"), "connections"),
+			"invoke": member(t, jsonCLIDocument(t, c, "", "invoke", "bookstack.pages.list",
+				"--connection", "wiki-primary"), "data"),
+		}
 		requests := map[string]string{
 			"search":   `{"query":"pages","provider":"bookstack"}`,
 			"describe": `{"operation":"bookstack.pages.get","version":1}`,
-			"invoke":   `{"operation":"bookstack.pages.get","connection":"wiki-primary","arguments":{"id":1}}`,
-		}
-		cliData := map[string]any{}
-		for _, name := range []string{"search", "describe", "invoke"} {
-			code, stdout, stderr := c.runInput(t, requests[name], name)
-			if code != 0 || stderr != "" {
-				t.Fatalf("JSON CLI %s exit=%d stderr=%q", name, code, stderr)
-			}
-			cliData[name] = jsonCLIData(t, stdout)
+			"invoke":   `{"operation":"bookstack.pages.list","connection":"wiki-primary"}`,
 		}
 		input := strings.Join([]string{
 			`{"jsonrpc":"2.0","id":"search","method":"tools/call","params":{` + mcpMeta + `,"name":"callbell.search","arguments":` + requests["search"] + `}}`,
@@ -704,36 +748,42 @@ defaults: {}
 			t.Fatalf("MCP exit=%d stderr=%q", code, stderr)
 		}
 		responses := decodeMCP(t, stdout)
-		for _, name := range []string{"search", "describe", "invoke"} {
-			if !reflect.DeepEqual(cliData[name], mcpData(t, responses[name])) {
-				t.Errorf("%s differs: JSON CLI=%#v MCP=%s", name, cliData[name], responses[name].Result.Structured)
+		for cliKey, mcpKey := range map[string]string{
+			"search": "operations", "describe": "operation", "connections": "connections", "invoke": "",
+		} {
+			name := cliKey
+			if cliKey == "connections" {
+				name = "describe"
+			}
+			if got := member(t, mcpData(t, responses[name]), mcpKey); !reflect.DeepEqual(cli[cliKey], got) {
+				t.Errorf("%s differs: CLI=%#v MCP=%#v", cliKey, cli[cliKey], got)
 			}
 		}
 	})
 
 	t.Run("ambiguous BookStack selection stops locally", func(t *testing.T) {
-		request := `{"operation":"bookstack.pages.list","arguments":{"limit":1}}`
-		code, stdout, stderr := c.runInput(t, request, "invoke")
+		code, stdout, stderr := c.runInput(t, `{"limit":1}`, "invoke", "bookstack.pages.list")
 		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "callbell: connection-ambiguous: ") {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})
 
 	t.Run("unconfirmed Telegram send stops before provider IO and audit", func(t *testing.T) {
-		request := `{"operation":"telegram.messages.send","connection":"telegram-alerts","arguments":{"text":"` + telegramSuccessText + `"}}`
-		code, stdout, stderr := c.runInput(t, request, "invoke")
+		code, stdout, stderr := c.runInput(t, `{"text":"`+telegramSuccessText+`"}`,
+			"invoke", "telegram.messages.send", "--connection", "telegram-alerts")
 		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "callbell: confirmation-required: ") ||
 			strings.Contains(stderr, `"request_id"`) || probe.count(telegramSuccessText) != 0 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q provider calls=%d", code, stdout, stderr, probe.count(telegramSuccessText))
 		}
 	})
 
-	t.Run("confirmed Telegram send matches over JSON CLI and MCP", func(t *testing.T) {
+	t.Run("confirmed Telegram send matches over the tool CLI and MCP", func(t *testing.T) {
 		arguments := `{"operation":"telegram.messages.send","connection":"telegram-alerts","arguments":{"text":"` + telegramSuccessText + `"},"confirm":true}`
 		before := probe.count(telegramSuccessText)
-		code, stdout, stderr := c.runInput(t, arguments, "invoke")
+		code, stdout, stderr := c.runInput(t, `{"text":"`+telegramSuccessText+`"}`,
+			"invoke", "telegram.messages.send", "--connection", "telegram-alerts", "--confirm")
 		if code != 0 || probe.count(telegramSuccessText) != before+1 {
-			t.Fatalf("JSON CLI exit=%d stderr=%q calls=%d", code, stderr, probe.count(telegramSuccessText)-before)
+			t.Fatalf("tool CLI exit=%d stderr=%q calls=%d", code, stderr, probe.count(telegramSuccessText)-before)
 		}
 		cliResult := jsonCLIData(t, stdout)
 		assertAudit(t, stderr, "telegram-alerts", "success", canaries)
@@ -746,15 +796,15 @@ defaults: {}
 			t.Fatalf("MCP exit=%d stderr=%q calls=%d", code, stderr, probe.count(telegramSuccessText)-before)
 		}
 		if got := mcpData(t, decodeMCP(t, stdout)["send"]); !reflect.DeepEqual(cliResult, got) {
-			t.Errorf("Telegram invoke differs: JSON CLI=%#v MCP=%#v", cliResult, got)
+			t.Errorf("Telegram invoke differs: tool CLI=%#v MCP=%#v", cliResult, got)
 		}
 		assertAudit(t, stderr, "telegram-alerts", "success", canaries)
 	})
 
 	t.Run("failed Telegram send keeps provider details private", func(t *testing.T) {
-		request := `{"operation":"telegram.messages.send","connection":"telegram-operations","arguments":{"text":"` + telegramFailureText + `"},"confirm":true}`
 		before := probe.count(telegramFailureText)
-		code, stdout, stderr := c.runInput(t, request, "invoke")
+		code, stdout, stderr := c.runInput(t, `{"text":"`+telegramFailureText+`"}`,
+			"invoke", "telegram.messages.send", "--connection", "telegram-operations", "--confirm")
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "callbell: provider-error: ") ||
 			probe.count(telegramFailureText) != before+1 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q calls=%d", code, stdout, stderr, probe.count(telegramFailureText)-before)
@@ -763,9 +813,9 @@ defaults: {}
 	})
 
 	t.Run("ambiguous Telegram network result is not retried", func(t *testing.T) {
-		request := `{"operation":"telegram.messages.send","connection":"telegram-operations","arguments":{"text":"` + telegramUnclearText + `"},"confirm":true}`
 		before := probe.count(telegramUnclearText)
-		code, stdout, stderr := c.runInput(t, request, "invoke")
+		code, stdout, stderr := c.runInput(t, `{"text":"`+telegramUnclearText+`"}`,
+			"invoke", "telegram.messages.send", "--connection", "telegram-operations", "--confirm")
 		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "callbell: unreachable: ") ||
 			probe.count(telegramUnclearText) != before+1 {
 			t.Fatalf("exit=%d stdout=%q stderr=%q calls=%d", code, stdout, stderr, probe.count(telegramUnclearText)-before)
@@ -856,7 +906,7 @@ connections:
     credential: reader
 defaults:
   connections:
-    knowledge: primary
+    bookstack: primary
 `, server.URL, tt.canary, tt.canary)
 			if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 				t.Fatalf("writing the configuration: %v", err)
@@ -874,19 +924,21 @@ defaults:
 				seen: &seen,
 			}
 
-			commands := [][]string{
-				{"config", "validate"},
-				{"capabilities"},
-				{"capabilities", "--agent"},
-				{"knowledge", "pages", "list"},
-				{"knowledge", "pages", "list", "--agent"},
-				{"knowledge", "pages", "list", "--output", "json"},
-				{"knowledge", "pages", "list", "--connection", "primary"},
-				{"knowledge", "pages", "get", "1"},
-				{"knowledge", "pages", "get", "1", "--output", "json"},
+			commands := []struct {
+				input string
+				args  []string
+			}{
+				{"", []string{"config", "validate"}},
+				{"", []string{"tools"}},
+				{"", []string{"tools", "--output", "json"}},
+				{"", []string{"tool", "bookstack.pages.list"}},
+				{"", []string{"invoke", "bookstack.pages.list"}},
+				{"", []string{"invoke", "bookstack.pages.list", "--connection", "primary"}},
+				{`{"id":1}`, []string{"invoke", "bookstack.pages.get"}},
 			}
-			for _, args := range commands {
-				_, stdout, stderr := c.run(t, args...)
+			for _, command := range commands {
+				args := command.args
+				_, stdout, stderr := c.runInput(t, command.input, args...)
 				if strings.Contains(stdout, tt.canary) {
 					t.Errorf("%v: the canary reached stdout: %q", args, stdout)
 				}
@@ -944,7 +996,7 @@ connections:
     credential: vault-reader
 defaults:
   connections:
-    knowledge: wiki
+    bookstack: wiki
 `, server.URL)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatalf("writing the configuration: %v", err)
@@ -1020,7 +1072,7 @@ defaults:
 			t.Errorf("mode = %v, want 0600", info.Mode().Perm())
 		}
 
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--agent")
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
@@ -1031,7 +1083,7 @@ defaults:
 
 		// The same secret, handed back by the provider: the file delivered it, and the redactor still
 		// has to keep it out of the message.
-		_, _, stderr = c.run(t, "knowledge", "pages", "get", echoPageID)
+		_, _, stderr = c.runInput(t, `{"id":`+echoPageID+`}`, "invoke", "bookstack.pages.get")
 		if !strings.Contains(stderr, redact.Marker) {
 			t.Errorf("stderr = %q, want the credential replaced by %s", stderr, redact.Marker)
 		}
@@ -1047,7 +1099,7 @@ defaults:
 			}
 		}()
 
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list")
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 2 {
 			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
@@ -1128,7 +1180,7 @@ defaults:
 		}
 
 		// The override really reaches the provider: the mock rejects the wrong token.
-		code, _, stderr = shadowed.run(t, "knowledge", "pages", "list", "--agent")
+		code, _, stderr = shadowed.run(t, "invoke", "bookstack.pages.list")
 		if code != 1 || !strings.HasPrefix(stderr, "callbell: auth: ") {
 			t.Errorf("exit %d, stderr %q; want an auth failure", code, stderr)
 		}
@@ -1196,7 +1248,7 @@ connections:
     credential: reader
 defaults:
   connections:
-    knowledge: wiki
+    bookstack: wiki
 `
 	envConfig := fmt.Sprintf(template, server.URL, "env\n    values:\n      token-id: E2E_UNSET_ID\n      token-secret: E2E_UNSET_SECRET")
 	keyringConfig := fmt.Sprintf(template, server.URL, "keyring")
@@ -1224,7 +1276,7 @@ defaults:
 	}
 
 	t.Run("the run fails instead of using the file", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list")
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 2 {
 			t.Errorf("exit %d, want 2 (stderr %q)", code, stderr)
@@ -1260,7 +1312,7 @@ defaults:
 			t.Fatalf("writing the configuration: %v", err)
 		}
 
-		code, stdout, stderr := c.run(t, "knowledge", "pages", "list", "--agent")
+		code, stdout, stderr := c.run(t, "invoke", "bookstack.pages.list")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)

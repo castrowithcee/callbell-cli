@@ -8,93 +8,16 @@ import (
 	"io"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/castrowithcee/callbell-cli/internal/application"
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
-// maxAgentRequestBytes bounds the complete stdin request before JSON decoding. One MiB leaves ample room
-// for operation arguments while preventing an untrusted agent from making the short-lived CLI allocate an
-// unbounded request body.
+// maxAgentRequestBytes bounds the complete stdin input before JSON decoding. One MiB leaves ample room for
+// tool arguments while preventing an untrusted agent from making the short-lived CLI allocate an unbounded
+// request body.
 const maxAgentRequestBytes = 1 << 20
-
-func newSearchCommand(opts *Options, registry *capability.Registry) *cobra.Command {
-	return &cobra.Command{
-		Use:   "search",
-		Short: "Search operation contracts from one JSON request on stdin",
-		Args:  noArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			var request application.SearchRequest
-			if err := decodeAgentRequest(c.InOrStdin(), &request); err != nil {
-				return &UsageError{err}
-			}
-			core, err := applicationCore(opts, registry, false)
-			if err != nil {
-				return err
-			}
-			response, err := core.Search(request)
-			if err != nil {
-				return classifyUserError(err)
-			}
-			return writeEnvelope(c.OutOrStdout(), response)
-		},
-	}
-}
-
-func newDescribeCommand(opts *Options, registry *capability.Registry) *cobra.Command {
-	return &cobra.Command{
-		Use:   "describe",
-		Short: "Describe one operation contract from a JSON request on stdin",
-		Args:  noArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			var request application.DescribeRequest
-			if err := decodeAgentRequest(c.InOrStdin(), &request); err != nil {
-				return &UsageError{err}
-			}
-			core, err := applicationCore(opts, registry, false)
-			if err != nil {
-				return err
-			}
-			response, err := core.Describe(request)
-			if err != nil {
-				return classifyUserError(err)
-			}
-			return writeEnvelope(c.OutOrStdout(), response)
-		},
-	}
-}
-
-func newInvokeCommand(opts *Options, registry *capability.Registry) *cobra.Command {
-	return &cobra.Command{
-		Use:   "invoke",
-		Short: "Invoke one operation from a JSON request on stdin",
-		Args:  noArgs,
-		RunE: func(c *cobra.Command, _ []string) error {
-			var request application.InvokeRequest
-			if err := decodeAgentRequest(c.InOrStdin(), &request); err != nil {
-				return &UsageError{err}
-			}
-			core, err := applicationCore(opts, registry, true)
-			if err != nil {
-				return err
-			}
-			var audit bytes.Buffer
-			core.SetAudit(&audit)
-			response, err := core.Invoke(c.Context(), request)
-			if err != nil {
-				return withAudit(classifyUserError(err), audit.Bytes())
-			}
-			if err := writeEnvelope(c.OutOrStdout(), response); err != nil {
-				return withAudit(err, audit.Bytes())
-			}
-			writeAudit(c.ErrOrStderr(), audit.Bytes(), opts.Redactor)
-			return nil
-		},
-	}
-}
 
 // auditedError carries a completed mutation audit event without changing the wrapped error's public
 // classification. The central runner prints the diagnostic and optional usage before it writes the event.
@@ -154,39 +77,41 @@ func applicationCore(opts *Options, registry *capability.Registry, withSecrets b
 	return application.New(registry, cfg, secrets, opts.Redactor), nil
 }
 
-func decodeAgentRequest(reader io.Reader, target any) error {
+// readInvokeArguments reads the schema-dependent arguments of one invocation from stdin. Empty input means
+// the tool is invoked without arguments; anything else must be exactly one bounded JSON object. The input
+// schema of the tool validates the content afterwards, in the application core.
+func readInvokeArguments(reader io.Reader) (json.RawMessage, error) {
 	input, err := io.ReadAll(io.LimitReader(reader, maxAgentRequestBytes+1))
 	if err != nil {
-		return &application.InvalidRequestError{Message: "stdin JSON request could not be read"}
+		return nil, &application.InvalidRequestError{Message: "stdin arguments could not be read"}
 	}
 	if len(input) > maxAgentRequestBytes {
-		return &application.InvalidRequestError{
-			Message: fmt.Sprintf("stdin JSON request exceeds %d bytes", maxAgentRequestBytes),
+		return nil, &application.InvalidRequestError{
+			Message: fmt.Sprintf("stdin arguments exceed %d bytes", maxAgentRequestBytes),
 		}
+	}
+	if len(bytes.TrimSpace(input)) == 0 {
+		return json.RawMessage(`{}`), nil
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	var raw json.RawMessage
 	if err := decoder.Decode(&raw); err != nil {
-		if errors.Is(err, io.EOF) {
-			return &application.InvalidRequestError{Message: "stdin must contain one JSON request"}
+		return nil, &application.InvalidRequestError{
+			Message: "stdin does not contain a valid JSON arguments object",
 		}
-		return &application.InvalidRequestError{Message: "stdin does not contain a valid JSON request"}
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return &application.InvalidRequestError{Message: "stdin must contain exactly one JSON request"}
+		return nil, &application.InvalidRequestError{
+			Message: "stdin must contain exactly one JSON arguments object",
+		}
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return &application.InvalidRequestError{Message: "stdin request must be a JSON object"}
+		return nil, &application.InvalidRequestError{Message: "stdin arguments must be a JSON object"}
 	}
-	request := json.NewDecoder(bytes.NewReader(trimmed))
-	request.DisallowUnknownFields()
-	if err := request.Decode(target); err != nil {
-		return &application.InvalidRequestError{Message: "stdin does not contain a valid JSON request"}
-	}
-	return nil
+	return json.RawMessage(trimmed), nil
 }
 
 func writeEnvelope(writer io.Writer, data any) error {

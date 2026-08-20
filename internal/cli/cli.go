@@ -130,7 +130,11 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		Use:   "callbell",
 		Short: "Command-line client for self-hosted knowledge and service backends",
 		Long: "Callbell CLI is a single command-line entry point to the knowledge and service backends you\n" +
-			"already run. It gives people and automated agents the same predictable interface.",
+			"already run. It gives people and automated agents the same predictable interface.\n\n" +
+			"Agents use one tool taxonomy: 'callbell tools' lists the catalog, 'callbell tool <id>' describes\n" +
+			"exactly one contract, and 'callbell invoke <id>' runs it. Discovery writes " + toonContract + ";\n" +
+			"--output json is the interoperable alternative. 'callbell tui' configures the same setup for\n" +
+			"people, and 'callbell mcp' serves the fixed broker tools over stdio.",
 		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -153,19 +157,18 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	f.StringVar(&opts.Config, "config", "", "path to the configuration file")
 	f.StringVar(&opts.Connection, "connection", "", "name of the connection to use")
 	f.BoolVar(&opts.Agent, "agent", false, "agent mode: machine-readable output without prose or color")
-	f.StringVar(&opts.Output, "output", string(output.FormatTable), "output format: table, json, or compact")
+	f.StringVar(&opts.Output, "output", string(output.FormatTable),
+		"output format: table, json, compact, or toon; tools and tool default to toon")
 	f.StringSliceVar(&opts.Fields, "fields", nil, "restrict the output to these fields, in this order")
 	f.IntVar(&opts.Limit, "limit", output.DefaultLimit, "maximum number of records; 0 means no limit")
 
 	cmd.AddCommand(
 		newConfigCommand(opts, reg),
 		newCredentialCommand(opts, reg),
-		newCapabilitiesCommand(opts, reg),
-		newSearchCommand(opts, reg),
-		newDescribeCommand(opts, reg),
+		newToolsCommand(opts, reg),
+		newToolCommand(opts, reg),
 		newInvokeCommand(opts, reg),
 		newMCPCommand(opts, reg),
-		newKnowledgeCommand(opts, reg),
 		newTUICommand(opts, reg),
 		newUpdateCommand(opts, version),
 	)

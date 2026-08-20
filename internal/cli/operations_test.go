@@ -14,30 +14,6 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
-func TestDecodeAgentRequestSizeLimit(t *testing.T) {
-	prefix, suffix := `{"padding":"`, `"}`
-	exact := prefix + strings.Repeat("a", maxAgentRequestBytes-len(prefix)-len(suffix)) + suffix
-	if len(exact) != maxAgentRequestBytes {
-		t.Fatalf("fixture size = %d, want %d", len(exact), maxAgentRequestBytes)
-	}
-
-	var request struct {
-		Padding string `json:"padding"`
-	}
-	if err := decodeAgentRequest(strings.NewReader(exact), &request); err != nil {
-		t.Fatalf("decodeAgentRequest(at limit) = %v", err)
-	}
-	if len(request.Padding) != maxAgentRequestBytes-len(prefix)-len(suffix) {
-		t.Errorf("padding length = %d", len(request.Padding))
-	}
-
-	over := exact + " "
-	err := decodeAgentRequest(strings.NewReader(over), &request)
-	if err == nil || !strings.Contains(err.Error(), "exceeds 1048576 bytes") {
-		t.Fatalf("decodeAgentRequest(limit + 1) = %v", err)
-	}
-}
-
 func TestOversizedInvokeStopsBeforeHandler(t *testing.T) {
 	t.Setenv("CALLBELL_CONFIG", "")
 	t.Setenv("CALLBELL_CLI_HOME", "")
@@ -64,11 +40,12 @@ func TestOversizedInvokeStopsBeforeHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	base := `{"operation":"bookstack.pages.get","arguments":{}}`
+	base := `{"id":1}`
 	input := base + strings.Repeat(" ", maxAgentRequestBytes-len(base)+1)
 	var stdout, stderr bytes.Buffer
 	opts := &Options{Input: strings.NewReader(input)}
-	code := run(newRootCommand(opts, registry), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "bookstack.pages.get", "--config", cfg}, &stdout, &stderr)
 
 	if code != exitUsage {
 		t.Errorf("exit code = %d, want %d", code, exitUsage)
@@ -111,8 +88,9 @@ func TestInvokeWithoutMatchingConnectionIsASelectionError(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	opts := &Options{Input: strings.NewReader(`{"operation":"bookstack.pages.get","arguments":{}}`)}
-	code := run(newRootCommand(opts, registry), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	opts := &Options{Input: strings.NewReader("")}
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "bookstack.pages.get", "--config", cfg}, &stdout, &stderr)
 
 	if code != exitUsage {
 		t.Errorf("exit code = %d, want %d", code, exitUsage)
@@ -175,9 +153,10 @@ defaults: {}
 	}
 
 	var stdout, stderr bytes.Buffer
-	request := `{"operation":"fake.messages.send","connection":"alerts","arguments":{"text":"private message"},"confirm":true}`
-	opts := &Options{Input: strings.NewReader(request), Redactor: &redact.Redactor{}}
-	code := run(newRootCommand(opts, registry), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	opts := &Options{Input: strings.NewReader(`{"text":"private message"}`), Redactor: &redact.Redactor{}}
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "fake.messages.send", "--connection", "alerts", "--confirm", "--config", cfg},
+		&stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("exit code = %d, stderr = %s", code, stderr.String())
 	}
@@ -248,9 +227,10 @@ defaults: {}
 	var stdout, stderr bytes.Buffer
 	redactor := &redact.Redactor{}
 	redactor.Add(canary)
-	request := `{"operation":"fake.messages.send","connection":"alerts","arguments":{"text":"private message"},"confirm":true}`
-	opts := &Options{Input: strings.NewReader(request), Redactor: redactor}
-	code := run(newRootCommand(opts, registry), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	opts := &Options{Input: strings.NewReader(`{"text":"private message"}`), Redactor: redactor}
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "fake.messages.send", "--connection", "alerts", "--confirm", "--config", cfg},
+		&stdout, &stderr)
 	if code != exitRuntime || stdout.Len() != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -325,9 +305,12 @@ defaults:
 	secretReads := 0
 	resolver := secret.NewWith(func(string) string { secretReads++; return "canary-token" }, nil, nil, nil)
 	var stdout, stderr bytes.Buffer
-	request := `{"operation":"fake.messages.send","arguments":{"text":"private message"},"confirm":true}`
-	opts := &Options{Input: strings.NewReader(request), Redactor: &redact.Redactor{}, Secrets: resolver}
-	code := run(newRootCommand(opts, registry), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	opts := &Options{
+		Input: strings.NewReader(`{"text":"private message"}`), Redactor: &redact.Redactor{},
+		Secrets: resolver,
+	}
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "fake.messages.send", "--confirm", "--config", cfg}, &stdout, &stderr)
 	if code != exitUsage || stdout.Len() != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
