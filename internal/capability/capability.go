@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -100,6 +101,10 @@ type Operation struct {
 	Handler    Handler
 }
 
+// ConnectionTester performs a provider's smallest safe authenticated read. It is separate from the
+// operation catalog: configuring and testing a provider does not imply that an agent operation exists.
+type ConnectionTester func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor) (provider.Class, error)
+
 // DuplicateError reports an operation ID and version that were already registered.
 type DuplicateError struct {
 	ID      string
@@ -126,6 +131,8 @@ func (e *VersionConflictError) Error() string {
 type Registry struct {
 	byID       map[string]Operation
 	byProvider map[string]map[string]Descriptor
+	metadata   map[string]config.ProviderMetadata
+	testers    map[string]ConnectionTester
 }
 
 // NewRegistry returns an empty registry.
@@ -133,7 +140,84 @@ func NewRegistry() *Registry {
 	return &Registry{
 		byID:       map[string]Operation{},
 		byProvider: map[string]map[string]Descriptor{},
+		metadata:   map[string]config.ProviderMetadata{},
+		testers:    map[string]ConnectionTester{},
 	}
+}
+
+// RegisterProvider records the configuration metadata and optional safe connection test of one provider.
+func (r *Registry) RegisterProvider(metadata config.ProviderMetadata, tester ConnectionTester) error {
+	if !validSegment(metadata.ID) {
+		return fmt.Errorf("provider ID %q must match [a-z][a-z0-9]*", metadata.ID)
+	}
+	if _, exists := r.metadata[metadata.ID]; exists {
+		return fmt.Errorf("provider %q metadata is already registered", metadata.ID)
+	}
+	if strings.TrimSpace(metadata.Name) == "" {
+		return fmt.Errorf("provider %q must have a display name", metadata.ID)
+	}
+	seen := map[string]bool{}
+	for _, role := range metadata.SecretRoles {
+		if !validConfigName(role.Name) {
+			return fmt.Errorf("provider %q secret role %q must use letters, digits, '-' or '_'", metadata.ID, role.Name)
+		}
+		if seen[role.Name] {
+			return fmt.Errorf("provider %q secret role %q is declared twice", metadata.ID, role.Name)
+		}
+		seen[role.Name] = true
+	}
+	if metadata.Target.Required && strings.TrimSpace(metadata.Target.Label) == "" {
+		return fmt.Errorf("provider %q requires a target label", metadata.ID)
+	}
+	r.metadata[metadata.ID] = cloneMetadata(metadata)
+	if tester != nil {
+		r.testers[metadata.ID] = tester
+	}
+	return nil
+}
+
+// ProviderMetadata returns one provider's configuration contract.
+func (r *Registry) ProviderMetadata(id string) (config.ProviderMetadata, bool) {
+	metadata, ok := r.metadata[id]
+	return cloneMetadata(metadata), ok
+}
+
+// ProviderMetadataAll returns every provider configuration contract sorted by ID.
+func (r *Registry) ProviderMetadataAll() []config.ProviderMetadata {
+	all := make([]config.ProviderMetadata, 0, len(r.metadata))
+	for _, metadata := range r.metadata {
+		all = append(all, cloneMetadata(metadata))
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	return all
+}
+
+// TestConnection invokes only the registered safe test function for the selected provider.
+func (r *Registry) TestConnection(ctx context.Context, resolved *config.Resolved, secrets *secret.Resolver,
+	red *redact.Redactor) (provider.Class, error) {
+	test, ok := r.testers[resolved.Provider]
+	if !ok {
+		return "", fmt.Errorf("connection %q uses provider %q, which cannot be tested yet", resolved.Name, resolved.Provider)
+	}
+	return test(ctx, resolved, secrets, red)
+}
+
+func cloneMetadata(metadata config.ProviderMetadata) config.ProviderMetadata {
+	metadata.SecretRoles = append([]config.SecretRole(nil), metadata.SecretRoles...)
+	return metadata
+}
+
+func validConfigName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Register records the operations implemented by one registered provider ID. Operation IDs must use that
@@ -146,7 +230,6 @@ func (r *Registry) Register(provider string, operations ...Operation) error {
 	if !validSegment(provider) {
 		return fmt.Errorf("provider ID %q must match [a-z][a-z0-9]*", provider)
 	}
-
 	staged := make([]Operation, 0, len(operations))
 	batch := make(map[string]Operation, len(operations))
 	for _, operation := range operations {

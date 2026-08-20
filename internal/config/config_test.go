@@ -33,7 +33,7 @@ defaults:
 `
 
 func TestLoadValidFixture(t *testing.T) {
-	cfg, err := Load(validFixture)
+	cfg, err := Load(validFixture, testProviders)
 	if err != nil {
 		t.Fatalf("Load() = %v, want nil", err)
 	}
@@ -67,7 +67,7 @@ func TestLoadValidFixture(t *testing.T) {
 
 // The shipped example must stay valid, otherwise the documentation promises a file that does not load.
 func TestShippedExampleIsValid(t *testing.T) {
-	if _, err := Load(filepath.Join("..", "..", "examples", "config.yaml")); err != nil {
+	if _, err := Load(filepath.Join("..", "..", "examples", "config.yaml"), testProviders); err != nil {
 		t.Fatalf("examples/config.yaml is invalid: %v", err)
 	}
 }
@@ -183,7 +183,7 @@ func TestDecodeRejects(t *testing.T) {
 				}
 			}
 
-			_, err := Decode(strings.NewReader(in))
+			_, err := Decode(strings.NewReader(in), testProviders)
 
 			if err == nil {
 				t.Fatal("Decode() = nil, want an error")
@@ -247,7 +247,7 @@ func TestADecodeErrorNeverQuotesTheFile(t *testing.T) {
 				t.Fatalf("replacement %q did not apply; the fixture drifted", tt.replace[0])
 			}
 
-			_, err := Decode(strings.NewReader(in))
+			_, err := Decode(strings.NewReader(in), testProviders)
 
 			if err == nil {
 				t.Fatal("Decode() = nil, want an error")
@@ -270,7 +270,7 @@ func TestValidateReportsAllProblems(t *testing.T) {
 		"knowledge: wiki", "knowledge: absent",
 	).Replace(minimal)
 
-	_, err := Decode(strings.NewReader(in))
+	_, err := Decode(strings.NewReader(in), testProviders)
 
 	if err == nil {
 		t.Fatal("Decode() = nil, want an error")
@@ -341,7 +341,7 @@ func TestPathPriority(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent.yaml")
 
-	_, err := Load(path)
+	_, err := Load(path, testProviders)
 
 	var notFound *NotFoundError
 	if !errors.As(err, &notFound) {
@@ -353,7 +353,7 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestResolve(t *testing.T) {
-	cfg, err := Load(validFixture)
+	cfg, err := Load(validFixture, testProviders)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -425,7 +425,7 @@ func TestNoSecretValueLeaks(t *testing.T) {
 	t.Setenv("WIKI_TOKEN_ID", canary)
 	t.Setenv("WIKI_TOKEN_SECRET", canary)
 
-	cfg, err := Load(validFixture)
+	cfg, err := Load(validFixture, testProviders)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -447,7 +447,7 @@ func TestNoSecretValueLeaks(t *testing.T) {
 		strings.Replace(minimal, "credential: reader", "credential: absent", 1),
 	}
 	for _, in := range broken {
-		_, err := Decode(strings.NewReader(in))
+		_, err := Decode(strings.NewReader(in), testProviders)
 		if err == nil {
 			t.Fatal("Decode() = nil, want an error")
 		}
@@ -490,7 +490,7 @@ defaults:
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := Load(path)
+	_, err := Load(path, testProviders)
 
 	if err == nil {
 		t.Fatal("Load() = nil, want an error")
@@ -527,7 +527,7 @@ func TestNamesFollowTheNameRule(t *testing.T) {
 				t.Fatalf("replacement %q did not apply; the fixture drifted", tt.replace[0])
 			}
 
-			_, err := Decode(strings.NewReader(in))
+			_, err := Decode(strings.NewReader(in), testProviders)
 
 			if err == nil {
 				t.Fatal("Decode() = nil, want an error")

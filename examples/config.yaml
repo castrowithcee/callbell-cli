@@ -19,6 +19,11 @@ services:
     provider: bookstack
     base_url: https://archive.example.invalid
 
+  # Telegram uses the Bot API root. The TUI fills this default when Telegram is selected.
+  telegram-main:
+    provider: telegram
+    base_url: https://api.telegram.org
+
 # A credential says where secrets come from. BookStack needs the roles token-id and token-secret.
 credentials:
   # type: keyring keeps the secrets in the credential store of the platform, so nothing has to be
@@ -41,6 +46,11 @@ credentials:
       token-id: CALLBELL_WIKI_AUDITOR_TOKEN_ID
       token-secret: CALLBELL_WIKI_AUDITOR_TOKEN_SECRET
 
+  telegram-notifier:
+    type: env
+    values:
+      bot-token: CALLBELL_TELEGRAM_NOTIFIER_BOT_TOKEN
+
 # A connection is what you select with --connection. It binds one service to one credential.
 connections:
   wiki:
@@ -58,7 +68,19 @@ connections:
     credential: wiki-reader
     target: books
 
+  # Telegram requires a fixed non-secret target on every connection. Two connections can bind the same
+  # bot to different chats without mixing their targets.
+  telegram-alerts:
+    service: telegram-main
+    credential: telegram-notifier
+    target: "-1001111111111"
+  telegram-operations:
+    service: telegram-main
+    credential: telegram-notifier
+    target: "-1002222222222"
+
 # Which connection a domain uses when --connection is not given.
 defaults:
   connections:
     knowledge: wiki
+    telegram: telegram-alerts

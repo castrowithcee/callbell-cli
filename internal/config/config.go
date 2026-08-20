@@ -32,6 +32,7 @@ type Config struct {
 	Credentials map[string]Credential `yaml:"credentials,omitempty"`
 	Connections map[string]Connection `yaml:"connections,omitempty"`
 	Defaults    Defaults              `yaml:"defaults"`
+	providers   ProviderCatalog       `yaml:"-"`
 }
 
 // Service is a technical API endpoint of one provider.
@@ -78,24 +79,6 @@ const (
 // CredentialTypes lists the supported credential types, in the order the documentation shows them.
 func CredentialTypes() []string { return []string{CredentialTypeEnv, CredentialTypeKeyring} }
 
-// providerSecretRoles lists the secret roles every provider requires. Roles are provider-defined: a
-// provider authenticating with a single bearer token needs one role, BookStack needs two.
-//
-// callbell-dev: the table lives here because config validation is the only consumer today; it moves to the
-// provider registry once providers register themselves. Only providers that actually exist belong here, so
-// a configuration that validates can also run.
-var providerSecretRoles = map[string][]string{
-	"bookstack": {"token-id", "token-secret"},
-}
-
-// secretRoleDescriptions explain provider terms at the point where a person has to supply them. They live
-// beside the provider schema so interfaces can stay free of provider-specific explanations.
-var secretRoleDescriptions = map[string]string{
-	"token-id": "BookStack token ID: the value labeled Token ID when you create an API token; " +
-		"it is not a name you choose",
-	"token-secret": "BookStack token secret: the value labeled Token Secret when you create the same API token",
-}
-
 // NotFoundError reports that no configuration file exists at the resolved path.
 type NotFoundError struct{ Path string }
 
@@ -134,7 +117,7 @@ func Path(explicit string) (string, error) {
 }
 
 // Load reads and validates the configuration at path.
-func Load(path string) (*Config, error) {
+func Load(path string, providers ...ProviderCatalog) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -144,7 +127,7 @@ func Load(path string) (*Config, error) {
 	}
 	defer f.Close()
 
-	cfg, err := Decode(f)
+	cfg, err := Decode(f, providers...)
 	if err != nil {
 		return nil, &InvalidError{Path: path, Err: err}
 	}
@@ -152,11 +135,12 @@ func Load(path string) (*Config, error) {
 }
 
 // Decode reads a configuration from r. Unknown keys and duplicate keys are errors.
-func Decode(r io.Reader) (*Config, error) {
+func Decode(r io.Reader, providers ...ProviderCatalog) (*Config, error) {
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
 
 	var cfg Config
+	cfg.providers = providerCatalog(providers)
 	if err := dec.Decode(&cfg); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, errors.New("the configuration file is empty")
@@ -232,6 +216,7 @@ func redactDecodeError(err error) error {
 // Validate reports every schema and reference problem at once. Messages name configuration keys and
 // environment variable names only, never secret values.
 func (c *Config) Validate() error {
+	providers := c.providerCatalog()
 	var problems []error
 	report := func(format string, args ...any) {
 		problems = append(problems, fmt.Errorf(format, args...))
@@ -257,9 +242,9 @@ func (c *Config) Validate() error {
 		checkName("services", "service name", name)
 		if s.Provider == "" {
 			report("services.%s: provider must not be empty", name)
-		} else if _, ok := providerSecretRoles[s.Provider]; !ok {
+		} else if _, ok := providers.ProviderMetadata(s.Provider); !ok {
 			report("services.%s: unknown provider %q, known providers are %s",
-				name, s.Provider, strings.Join(sortedKeys(providerSecretRoles), ", "))
+				name, s.Provider, strings.Join(c.Providers(), ", "))
 		}
 		if err := validateBaseURL(s.BaseURL); err != nil {
 			report("services.%s.base_url: %v", name, err)
@@ -309,11 +294,18 @@ func (c *Config) Validate() error {
 		// here; which ones it must supply follows from the provider, and whether they are supplied is a
 		// question about the credential store, not about this file.
 		if ok && credOK && cred.Type == CredentialTypeEnv {
-			for _, role := range providerSecretRoles[service.Provider] {
+			for _, role := range c.ProviderSecretRoles(service.Provider) {
 				if cred.Values[role] == "" {
 					report("connections.%s: provider %q requires the secret role %q in credential %q",
 						name, service.Provider, role, conn.Credential)
 				}
+			}
+		}
+		if ok {
+			metadata, _ := providers.ProviderMetadata(service.Provider)
+			if metadata.Target.Required && strings.TrimSpace(conn.Target) == "" {
+				report("connections.%s.target: provider %q requires %s", name, service.Provider,
+					metadata.Target.Label)
 			}
 		}
 	}
@@ -327,6 +319,68 @@ func (c *Config) Validate() error {
 	}
 
 	return errors.Join(problems...)
+}
+
+func providerCatalog(providers []ProviderCatalog) ProviderCatalog {
+	if len(providers) > 0 && providers[0] != nil {
+		return providers[0]
+	}
+	return emptyProviderCatalog{}
+}
+
+func (c *Config) providerCatalog() ProviderCatalog {
+	if c.providers != nil {
+		return c.providers
+	}
+	return emptyProviderCatalog{}
+}
+
+// Providers returns the registered provider IDs in deterministic order.
+func (c *Config) Providers() []string {
+	metadata := c.providerCatalog().ProviderMetadataAll()
+	providers := make([]string, len(metadata))
+	for i := range metadata {
+		providers[i] = metadata[i].ID
+	}
+	return providers
+}
+
+// ProviderMetadata returns one registered provider's configuration contract.
+func (c *Config) ProviderMetadata(provider string) (ProviderMetadata, bool) {
+	return c.providerCatalog().ProviderMetadata(provider)
+}
+
+// ProviderSecretRoles returns the roles one provider requires, in declaration order.
+func (c *Config) ProviderSecretRoles(provider string) []string {
+	metadata, _ := c.ProviderMetadata(provider)
+	roles := make([]string, len(metadata.SecretRoles))
+	for i := range metadata.SecretRoles {
+		roles[i] = metadata.SecretRoles[i].Name
+	}
+	return roles
+}
+
+// SecretRoles returns all registered roles in deterministic order.
+func (c *Config) SecretRoles() []string {
+	roles := map[string]bool{}
+	for _, metadata := range c.providerCatalog().ProviderMetadataAll() {
+		for _, role := range metadata.SecretRoles {
+			roles[role.Name] = true
+		}
+	}
+	return sortedKeys(roles)
+}
+
+// SecretRoleDescription returns the provider-authored help for a role.
+func (c *Config) SecretRoleDescription(role string) string {
+	for _, metadata := range c.providerCatalog().ProviderMetadataAll() {
+		for _, candidate := range metadata.SecretRoles {
+			if candidate.Name == role {
+				return candidate.Description
+			}
+		}
+	}
+	return ""
 }
 
 func validateBaseURL(raw string) error {

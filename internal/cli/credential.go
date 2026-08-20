@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -17,7 +18,7 @@ import (
 // the credential store. No API token is anywhere near this large.
 const maxSecretBytes = 8 << 10
 
-func newCredentialCommand(opts *Options) *cobra.Command {
+func newCredentialCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "credential",
 		Short: "Manage the secrets of a keyring credential",
@@ -41,7 +42,7 @@ func newCredentialCommand(opts *Options) *cobra.Command {
 			"warning when an environment variable would override what was just stored.",
 		Args: exactlyTwoArgs,
 		RunE: func(c *cobra.Command, args []string) error {
-			return setCredential(c, opts, args[0], args[1], plaintext)
+			return setCredential(c, opts, reg, args[0], args[1], plaintext)
 		},
 	}
 	set.Flags().BoolVar(&plaintext, "plaintext", false,
@@ -54,7 +55,7 @@ func newCredentialCommand(opts *Options) *cobra.Command {
 			"environment variable is not touched: it belongs to the shell, not to callbell.",
 		Args: exactlyTwoArgs,
 		RunE: func(c *cobra.Command, args []string) error {
-			return deleteCredential(c, opts, args[0], args[1])
+			return deleteCredential(c, opts, reg, args[0], args[1])
 		},
 	}
 
@@ -62,8 +63,8 @@ func newCredentialCommand(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func setCredential(c *cobra.Command, opts *Options, name, role string, plaintext bool) error {
-	if err := checkKeyringRole(opts, name, role); err != nil {
+func setCredential(c *cobra.Command, opts *Options, reg *capability.Registry, name, role string, plaintext bool) error {
+	if err := checkKeyringRole(opts, reg, name, role); err != nil {
 		return err
 	}
 	secrets, err := opts.resolver()
@@ -98,8 +99,8 @@ func setCredential(c *cobra.Command, opts *Options, name, role string, plaintext
 	return nil
 }
 
-func deleteCredential(c *cobra.Command, opts *Options, name, role string) error {
-	if err := checkKeyringRole(opts, name, role); err != nil {
+func deleteCredential(c *cobra.Command, opts *Options, reg *capability.Registry, name, role string) error {
+	if err := checkKeyringRole(opts, reg, name, role); err != nil {
 		return err
 	}
 	secrets, err := opts.resolver()
@@ -132,12 +133,12 @@ func deleteCredential(c *cobra.Command, opts *Options, name, role string) error 
 
 // checkKeyringRole verifies that the pair names something that can hold a stored secret at all. A typo
 // would otherwise leave an entry in the credential store that nothing ever reads.
-func checkKeyringRole(opts *Options, name, role string) error {
+func checkKeyringRole(opts *Options, reg *capability.Registry, name, role string) error {
 	path, err := config.Path(opts.Config)
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, reg)
 	if err != nil {
 		return classifyUserError(err)
 	}
@@ -151,9 +152,9 @@ func checkKeyringRole(opts *Options, name, role string) error {
 			"credential %q has type %q: its secrets come from the environment variables it names, so there "+
 				"is nothing to store", name, cred.Type)}
 	}
-	if !contains(config.SecretRoles(), role) {
+	if !contains(cfg.SecretRoles(), role) {
 		return &UsageError{fmt.Errorf("unknown secret role %q, known roles are %s",
-			role, strings.Join(config.SecretRoles(), ", "))}
+			role, strings.Join(cfg.SecretRoles(), ", "))}
 	}
 	return nil
 }

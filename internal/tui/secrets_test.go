@@ -20,7 +20,7 @@ func newStoreModel(t *testing.T) (*Model, *config.Store, string, *secret.Resolve
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "callbell")
 	path := filepath.Join(dir, "config.yaml")
-	store := config.NewStore(path)
+	store := newTestStore(t, path)
 
 	secrets, mem := newResolver(t, dir, nil)
 	m, err := New(store, nil, secrets, nil)
@@ -114,7 +114,7 @@ func TestKeyringSetupHappensEntirelyInTheEditor(t *testing.T) {
 	}
 
 	// The configuration loads through the ordinary loader and carries no secret.
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -171,7 +171,7 @@ func TestKeyringSetupHappensEntirelyInTheEditor(t *testing.T) {
 func TestKeyringCredentialKeepsItsTypeOnAnUnchangedSave(t *testing.T) {
 	_, store, path, secrets, _ := newStoreModel(t)
 
-	cfg := config.New()
+	cfg := newTestConfig(t)
 	mustNoError(t, cfg.SetService("wiki", config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}))
 	mustNoError(t, cfg.SetCredential("reader", config.Credential{Type: config.CredentialTypeKeyring}))
 	mustNoError(t, cfg.SetConnection("wiki", config.Connection{Service: "wiki", Credential: "reader"}))
@@ -196,7 +196,7 @@ func TestKeyringCredentialKeepsItsTypeOnAnUnchangedSave(t *testing.T) {
 	if got := m.fieldValue(typeLabel); got != config.CredentialTypeKeyring {
 		t.Errorf("the form shows type %q, want keyring", got)
 	}
-	for _, role := range config.SecretRoles() {
+	for _, role := range m.cfg.SecretRoles() {
 		f := m.fields[fieldIndex(t, m, role)]
 		if f.kind != fieldSecret {
 			t.Errorf("role %q is drawn as a variable name, not as a stored secret", role)
@@ -211,7 +211,7 @@ func TestKeyringCredentialKeepsItsTypeOnAnUnchangedSave(t *testing.T) {
 	if m.fail != "" {
 		t.Fatalf("an unchanged keyring credential does not save: %q", m.fail)
 	}
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -246,7 +246,7 @@ func mustNoError(t *testing.T, err error) {
 func TestTypeChangeIsRefusedWhileASecretIsStored(t *testing.T) {
 	_, store, path, secrets, _ := newStoreModel(t)
 
-	cfg := config.New()
+	cfg := newTestConfig(t)
 	mustNoError(t, cfg.SetCredential("reader", config.Credential{Type: config.CredentialTypeKeyring}))
 	mustNoError(t, store.Save(cfg))
 	mustNoError(t, secrets.Set("reader", "token-secret", "canary-orphan-candidate"))
@@ -263,7 +263,7 @@ func TestTypeChangeIsRefusedWhileASecretIsStored(t *testing.T) {
 	if !strings.Contains(m.fail, "token-secret") || !strings.Contains(m.fail, "still stored") {
 		t.Fatalf("error = %q, want it to name the stored role", m.fail)
 	}
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -296,7 +296,7 @@ func TestTypeChangeIsRefusedWhileASecretIsStored(t *testing.T) {
 	if m.fail != "" {
 		t.Fatalf("the type change still fails: %q", m.fail)
 	}
-	saved, err = config.Load(path)
+	saved, err = loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -540,7 +540,7 @@ func (b blockingSecrets) Plaintext() *secret.File { return nil }
 // loop keeps working meanwhile.
 func TestSlowStoreDoesNotBlockTheEditor(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "callbell")
-	store := config.NewStore(filepath.Join(dir, "config.yaml"))
+	store := newTestStore(t, filepath.Join(dir, "config.yaml"))
 	slow := newBlockingSecrets()
 	// Only the write is slow here; the question where a role resolves from is answered at once.
 	close(slow.probes)
@@ -608,7 +608,7 @@ func TestSlowStoreDoesNotBlockTheEditor(t *testing.T) {
 // does not answer leaves the editor usable instead of freezing the list it was opened from.
 func TestSlowStatusQueryDoesNotBlockTheEditor(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "callbell")
-	store := config.NewStore(filepath.Join(dir, "config.yaml"))
+	store := newTestStore(t, filepath.Join(dir, "config.yaml"))
 	slow := newBlockingSecrets()
 
 	m, err := New(store, nil, slow, nil)
@@ -700,7 +700,7 @@ func TestLongMessagesStayReadable(t *testing.T) {
 // why it cannot.
 func TestWithoutAResolver(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "callbell")
-	store := config.NewStore(filepath.Join(dir, "config.yaml"))
+	store := newTestStore(t, filepath.Join(dir, "config.yaml"))
 	m, err := New(store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
@@ -723,9 +723,9 @@ func storedCredential(t *testing.T, env map[string]string) (
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "callbell")
 	path := filepath.Join(dir, "config.yaml")
-	store := config.NewStore(path)
+	store := newTestStore(t, path)
 
-	cfg := config.New()
+	cfg := newTestConfig(t)
 	mustNoError(t, cfg.SetCredential("reader", config.Credential{Type: config.CredentialTypeKeyring}))
 	mustNoError(t, store.Save(cfg))
 
@@ -829,7 +829,7 @@ func TestTypeChangeGuardAsksWhatIsStoredNotWhatDelivers(t *testing.T) {
 			}
 			attemptTypeChange(t, m)
 
-			saved, err := config.Load(path)
+			saved, err := loadTestConfig(t, path)
 			if err != nil {
 				t.Fatalf("Load() = %v", err)
 			}
@@ -894,7 +894,7 @@ func TestEveryWriteOutcomeReachesTheUser(t *testing.T) {
 		err: map[string]error{"token-id": secret.ErrUnavailable},
 	}
 
-	store := config.NewStore(filepath.Join(t.TempDir(), "callbell", "config.yaml"))
+	store := newTestStore(t, filepath.Join(t.TempDir(), "callbell", "config.yaml"))
 	m, err := New(store, nil, scripted, nil)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
@@ -962,8 +962,8 @@ func TestAWaitingTypeChangeSurvivesADisplayRefresh(t *testing.T) {
 
 	dir := filepath.Join(t.TempDir(), "callbell")
 	path := filepath.Join(dir, "config.yaml")
-	store := config.NewStore(path)
-	cfg := config.New()
+	store := newTestStore(t, path)
+	cfg := newTestConfig(t)
 	mustNoError(t, cfg.SetCredential("reader", config.Credential{Type: config.CredentialTypeKeyring}))
 	mustNoError(t, store.Save(cfg))
 
@@ -999,7 +999,7 @@ func TestAWaitingTypeChangeSurvivesADisplayRefresh(t *testing.T) {
 	if m.fail != "" {
 		t.Fatalf("the save was refused: %q", m.fail)
 	}
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -1116,7 +1116,7 @@ func TestTheGuardsWayOutReallyLeadsOut(t *testing.T) {
 	if m.fail != "" {
 		t.Fatalf("the change is still refused: %q", m.fail)
 	}
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -1133,8 +1133,8 @@ func TestQuittingDropsAWaitingTypeChange(t *testing.T) {
 
 	dir := filepath.Join(t.TempDir(), "callbell")
 	path := filepath.Join(dir, "config.yaml")
-	store := config.NewStore(path)
-	cfg := config.New()
+	store := newTestStore(t, path)
+	cfg := newTestConfig(t)
 	mustNoError(t, cfg.SetCredential("reader", config.Credential{Type: config.CredentialTypeKeyring}))
 	mustNoError(t, store.Save(cfg))
 
@@ -1167,7 +1167,7 @@ func TestQuittingDropsAWaitingTypeChange(t *testing.T) {
 		t.Fatal("the guard never answered")
 	}
 
-	saved, err := config.Load(path)
+	saved, err := loadTestConfig(t, path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}

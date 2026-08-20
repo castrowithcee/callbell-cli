@@ -114,6 +114,23 @@ var (
 
 // Register records this provider's operations and their existing command handlers.
 func Register(reg *capability.Registry) error {
+	if err := reg.RegisterProvider(config.ProviderMetadata{
+		ID: Provider, Name: "BookStack",
+		SecretRoles: []config.SecretRole{
+			{Name: roleTokenID, Description: "BookStack token ID: the value labeled Token ID when you create an API token; it is not a name you choose"},
+			{Name: roleTokenSecret, Description: "BookStack token secret: the value labeled Token Secret when you create the same API token"},
+		},
+		Target: config.TargetMetadata{Label: "target", Description: "optional provider-specific scope inside the service"},
+	}, func(ctx context.Context, resolved *config.Resolved, secrets *secret.Resolver,
+		red *redact.Redactor) (provider.Class, error) {
+		client, err := Open(resolved, secrets, red)
+		if err != nil {
+			return "", err
+		}
+		return client.TestConnection(ctx), nil
+	}); err != nil {
+		return err
+	}
 	return reg.Register(Provider,
 		capability.Operation{Descriptor: pagesList, Handler: capability.Handler(invokePagesList)},
 		capability.Operation{Descriptor: pagesGet, Handler: capability.Handler(invokePagesGet)},

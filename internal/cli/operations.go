@@ -93,7 +93,7 @@ func applicationCore(opts *Options, registry *capability.Registry, withSecrets b
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, registry)
 	if err != nil {
 		return nil, classifyUserError(err)
 	}

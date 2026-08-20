@@ -155,14 +155,14 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	f.IntVar(&opts.Limit, "limit", output.DefaultLimit, "maximum number of records; 0 means no limit")
 
 	cmd.AddCommand(
-		newConfigCommand(opts),
-		newCredentialCommand(opts),
+		newConfigCommand(opts, reg),
+		newCredentialCommand(opts, reg),
 		newCapabilitiesCommand(opts, reg),
 		newSearchCommand(opts, reg),
 		newDescribeCommand(opts, reg),
 		newInvokeCommand(opts, reg),
 		newKnowledgeCommand(opts, reg),
-		newTUICommand(opts),
+		newTUICommand(opts, reg),
 	)
 
 	return cmd

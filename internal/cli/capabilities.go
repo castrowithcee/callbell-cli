@@ -9,6 +9,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
+	"github.com/castrowithcee/callbell-cli/internal/provider/telegram"
 )
 
 // defaultRegistry wires every provider implementation this build ships. Registration is static, so a
@@ -16,6 +17,9 @@ import (
 func defaultRegistry() *capability.Registry {
 	reg := capability.NewRegistry()
 	if err := bookstack.Register(reg); err != nil {
+		panic("provider registration is static and must not fail: " + err.Error())
+	}
+	if err := telegram.Register(reg); err != nil {
 		panic("provider registration is static and must not fail: " + err.Error())
 	}
 	return reg
@@ -27,7 +31,7 @@ func catalog(opts *Options, reg *capability.Registry) (*capability.Catalog, erro
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, reg)
 	if err != nil {
 		return nil, classifyUserError(err)
 	}

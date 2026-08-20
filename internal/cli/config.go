@@ -8,11 +8,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
 )
 
-func newConfigCommand(opts *Options) *cobra.Command {
+func newConfigCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Inspect the callbell configuration",
@@ -37,7 +38,7 @@ func newConfigCommand(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load(path)
+			cfg, err := config.Load(path, reg)
 			if err != nil {
 				return classifyUserError(err)
 			}
@@ -88,7 +89,7 @@ func secretSources(cfg *config.Config, opts *Options) (output.Result, error) {
 		if err != nil {
 			return nil, classifyUserError(err)
 		}
-		for _, role := range config.ProviderSecretRoles(resolved.Provider) {
+		for _, role := range cfg.ProviderSecretRoles(resolved.Provider) {
 			source, checked := resolver.Status(resolved.Credential, resolved.Secrets, role)
 			rows = append(rows, output.Row{
 				"connection": name,

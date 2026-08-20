@@ -38,35 +38,10 @@ func (e *NotThereError) Error() string {
 	return fmt.Sprintf("%s %q does not exist", e.Kind, e.Name)
 }
 
-// SecretRoles returns every secret role a known provider can require, sorted. A user interface asks for
-// them here instead of knowing anything about providers itself.
-func SecretRoles() []string {
-	seen := map[string]bool{}
-	for _, roles := range providerSecretRoles {
-		for _, role := range roles {
-			seen[role] = true
-		}
-	}
-	return sortedKeys(seen)
-}
-
-// SecretRoleDescription explains one provider-defined role without exposing a secret value. Unknown roles
-// have no description, so a future provider cannot accidentally inherit the meaning of another one.
-func SecretRoleDescription(role string) string { return secretRoleDescriptions[role] }
-
-// Providers returns the provider names a service may use, sorted.
-func Providers() []string { return sortedKeys(providerSecretRoles) }
-
-// ProviderSecretRoles returns the secret roles one provider requires, in the order it declares them. An
-// unknown provider requires none, which is what validation already reported.
-func ProviderSecretRoles(provider string) []string {
-	roles := providerSecretRoles[provider]
-	return append([]string(nil), roles...)
-}
-
 // Clone returns a deep copy, so a caller can try a change and discard it without touching the original.
 func (c *Config) Clone() *Config {
 	out := New()
+	out.providers = c.providers
 	out.Version = c.Version
 	for name, s := range c.Services {
 		copied := s
@@ -99,34 +74,39 @@ func cloneStrings(m map[string]string) map[string]string {
 }
 
 // New returns an empty configuration of the current schema version.
-func New() *Config {
+func New(providers ...ProviderCatalog) *Config {
 	return &Config{
 		Version:     Version,
 		Services:    map[string]Service{},
 		Credentials: map[string]Credential{},
 		Connections: map[string]Connection{},
 		Defaults:    Defaults{Connections: map[string]string{}},
+		providers:   providerCatalog(providers),
 	}
 }
 
 // Store reads and writes one configuration file. A save either replaces the file completely or leaves it
 // exactly as it was.
 type Store struct {
-	path string
+	path      string
+	providers ProviderCatalog
 	// marshal is a seam so a test can simulate an encoding failure.
 	marshal func(any) ([]byte, error)
 }
 
 // NewStore returns a store for the configuration file at path.
-func NewStore(path string) *Store {
-	return &Store{path: path, marshal: yaml.Marshal}
+func NewStore(path string, providers ...ProviderCatalog) *Store {
+	return &Store{path: path, providers: providerCatalog(providers), marshal: yaml.Marshal}
 }
 
 // Path returns the file this store writes.
 func (s *Store) Path() string { return s.path }
 
+// New returns an empty configuration attached to the same provider catalog this store loads and saves.
+func (s *Store) New() *Config { return New(s.providers) }
+
 // Load reads the configuration through the same loader the CLI uses.
-func (s *Store) Load() (*Config, error) { return Load(s.path) }
+func (s *Store) Load() (*Config, error) { return Load(s.path, s.providers) }
 
 // Save validates the configuration, encodes it, checks that the encoded form loads back, and only then
 // replaces the target file. Any failure before the replacement leaves the target byte-identical.
@@ -140,7 +120,7 @@ func (s *Store) Save(cfg *Config) error {
 		return &InvalidError{Path: s.path, Err: fmt.Errorf("the configuration could not be encoded: %w", err)}
 	}
 	// What is written must load back, so an encoding defect can never reach the target file.
-	if _, err := Decode(bytes.NewReader(data)); err != nil {
+	if _, err := Decode(bytes.NewReader(data), s.providers); err != nil {
 		return &InvalidError{Path: s.path, Err: fmt.Errorf("the encoded configuration is not loadable: %w", err)}
 	}
 

@@ -41,7 +41,7 @@ func newKnowledgeCommand(opts *Options, reg *capability.Registry) *cobra.Command
 			"the provider. --limit 0 returns every page.",
 		Args: noArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
-			client, err := openKnowledge(opts)
+			client, err := openKnowledge(opts, reg)
 			if err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ func newKnowledgeCommand(opts *Options, reg *capability.Registry) *cobra.Command
 			if err != nil || id <= 0 {
 				return &UsageError{fmt.Errorf("page id %q is not a positive number", args[0])}
 			}
-			client, err := openKnowledge(opts)
+			client, err := openKnowledge(opts, reg)
 			if err != nil {
 				return err
 			}
@@ -89,12 +89,12 @@ func newKnowledgeCommand(opts *Options, reg *capability.Registry) *cobra.Command
 }
 
 // openKnowledge resolves the connection for the knowledge domain and opens its provider.
-func openKnowledge(opts *Options) (*bookstack.Client, error) {
+func openKnowledge(opts *Options, reg *capability.Registry) (*bookstack.Client, error) {
 	path, err := config.Path(opts.Config)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(path, reg)
 	if err != nil {
 		return nil, classifyUserError(err)
 	}

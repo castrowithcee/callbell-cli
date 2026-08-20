@@ -209,7 +209,7 @@ func New(store *config.Store, tester Tester, secrets Secrets, redactor *redact.R
 		if !asNotFound(err, &notFound) {
 			return nil, err
 		}
-		cfg = config.New()
+		cfg = store.New()
 		configExists = false
 	}
 	if redactor == nil {
@@ -423,6 +423,7 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	current := &m.fields[m.focus]
 	switch current.kind {
 	case fieldChoice:
+		previous := current.value()
 		switch key.String() {
 		case "left", "h":
 			current.index = wrap(current.index-1, len(current.choices))
@@ -433,6 +434,12 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 		}
 		if current.label == typeLabel {
 			return m.credentialTypeChosen()
+		}
+		if current.label == "provider" {
+			m.providerChosen(previous)
+		}
+		if current.label == "service" {
+			m.targetChosen()
 		}
 		return nil
 	case fieldSecret:
@@ -445,6 +452,31 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	var cmd tea.Cmd
 	current.input, cmd = current.input.Update(key)
 	return cmd
+}
+
+func (m *Model) providerChosen(previous string) {
+	base := m.field("base url")
+	if base == nil {
+		return
+	}
+	old, _ := m.cfg.ProviderMetadata(previous)
+	metadata, _ := m.cfg.ProviderMetadata(m.fieldValue("provider"))
+	if strings.TrimSpace(base.input.Value()) == "" || base.input.Value() == old.DefaultBaseURL {
+		base.input.SetValue(metadata.DefaultBaseURL)
+	}
+}
+
+func (m *Model) targetChosen() {
+	target := m.field("target")
+	if target == nil {
+		return
+	}
+	service := m.cfg.Services[m.fieldValue("service")]
+	metadata, _ := m.cfg.ProviderMetadata(service.Provider)
+	target.hint = metadata.Target.Description
+	if metadata.Target.Required {
+		target.hint += "; required for " + metadata.Name
+	}
 }
 
 func (m *Model) updateConfirm(key tea.KeyMsg) tea.Cmd {
@@ -644,7 +676,7 @@ func (m *Model) credentialTypeChosen() tea.Cmd {
 			// A secret row builds its hint from what the resolver reported, so it carries none itself.
 			f.kind, f.hint = fieldSecret, ""
 		} else {
-			f.kind, f.hint = fieldEnvName, roleHint(f.label, f.roleLead)
+			f.kind, f.hint = fieldEnvName, m.roleHint(f.label, f.roleLead)
 		}
 	}
 	m.applyFocus()
@@ -670,9 +702,13 @@ func (m *Model) buildFields(name string) []field {
 	case sectionServices:
 		s := m.cfg.Services[name]
 		fields = append(fields,
-			choiceField("provider", config.Providers(), s.Provider),
+			choiceField("provider", m.cfg.Providers(), s.Provider),
 			textField("base url", s.BaseURL, false).withHint(baseURLHint),
 		)
+		if name == "" {
+			metadata, _ := m.cfg.ProviderMetadata(fields[1].value())
+			fields[2].input.SetValue(metadata.DefaultBaseURL)
+		}
 	case sectionCredentials:
 		cred := m.cfg.Credentials[name]
 		credType := cred.Type
@@ -682,8 +718,8 @@ func (m *Model) buildFields(name string) []field {
 			credType = config.CredentialTypeKeyring
 		}
 		fields = append(fields, choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint))
-		for i, role := range config.SecretRoles() {
-			fields = append(fields, roleField(role, cred.Values[role], credType, i == 0))
+		for i, role := range m.cfg.SecretRoles() {
+			fields = append(fields, m.roleField(role, cred.Values[role], credType, i == 0))
 		}
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
@@ -692,6 +728,12 @@ func (m *Model) buildFields(name string) []field {
 			choiceField("credential", m.entryNames(sectionCredentials), conn.Credential),
 			textField("target", conn.Target, false),
 		)
+		service := m.cfg.Services[fields[1].value()]
+		metadata, _ := m.cfg.ProviderMetadata(service.Provider)
+		fields[3].hint = metadata.Target.Description
+		if metadata.Target.Required {
+			fields[3].hint += "; required for " + metadata.Name
+		}
 	case sectionDefaults:
 		fields = append(fields,
 			choiceField("connection", m.entryNames(sectionConnections), m.cfg.Defaults.Connections[name]),
@@ -735,7 +777,7 @@ func (m *Model) save(name string) tea.Cmd {
 			}
 		}
 		m.applyFocus()
-		m.status = "Credential saved. Add the BookStack token ID and token secret below: press s on each " +
+		m.status = "Credential saved. Add the required provider secrets below: press s on each " +
 			"role, or p if the system credential store is unavailable."
 		return cmd
 	}
@@ -758,7 +800,7 @@ func (m *Model) apply(cfg *config.Config, name string) error {
 		// this file cannot hold a secret even by accident; the core refuses one that does.
 		if cred.Type == config.CredentialTypeEnv {
 			cred.Values = map[string]string{}
-			for _, role := range config.SecretRoles() {
+			for _, role := range m.cfg.SecretRoles() {
 				if v := m.fieldValue(role); v != "" {
 					cred.Values[role] = v
 				}
@@ -823,6 +865,15 @@ func (m *Model) fieldValue(label string) string {
 		}
 	}
 	return ""
+}
+
+func (m *Model) field(label string) *field {
+	for i := range m.fields {
+		if m.fields[i].label == label {
+			return &m.fields[i]
+		}
+	}
+	return nil
 }
 
 // moveFocus steps to the next field that can be edited. A read-only field is stepped over rather than
@@ -899,10 +950,10 @@ func textField(label, value string, readOnly bool) field {
 // editor in either case.
 //
 // lead marks the first role row, the one that carries what all of them have in common.
-func roleField(role, envName, credType string, lead bool) field {
+func (m *Model) roleField(role, envName, credType string, lead bool) field {
 	f := textField(role, envName, false)
 	f.roleLead = lead
-	f.kind, f.hint = fieldEnvName, roleHint(role, lead)
+	f.kind, f.hint = fieldEnvName, m.roleHint(role, lead)
 	if credType == config.CredentialTypeKeyring {
 		// A secret row builds its hint from what the resolver reported, so it carries none itself.
 		f.kind, f.hint = fieldSecret, ""
@@ -912,9 +963,9 @@ func roleField(role, envName, credType string, lead bool) field {
 
 // roleHint says what the provider-defined role means. Only the first row adds the explanation shared by
 // every env row; repeating that part under the next role would read like a fault.
-func roleHint(role string, lead bool) string {
+func (m *Model) roleHint(role string, lead bool) string {
 	var parts []string
-	if description := config.SecretRoleDescription(role); description != "" {
+	if description := m.cfg.SecretRoleDescription(role); description != "" {
 		parts = append(parts, description)
 	}
 	if lead {
@@ -1311,8 +1362,8 @@ func (m *Model) dashboardEntry(s section, name string) string {
 		return fmt.Sprintf("%s · %s · %s", name, service.Provider, service.BaseURL)
 	case sectionCredentials:
 		cred := m.cfg.Credentials[name]
-		roles := make([]string, 0, len(config.SecretRoles()))
-		for _, role := range config.SecretRoles() {
+		roles := make([]string, 0, len(m.cfg.SecretRoles()))
+		for _, role := range m.cfg.SecretRoles() {
 			source := sourceUnnamed
 			if cred.Type == config.CredentialTypeKeyring {
 				source = m.storedSource(name, role)
@@ -1324,7 +1375,11 @@ func (m *Model) dashboardEntry(s section, name string) string {
 		return fmt.Sprintf("%s · %s · %s", name, cred.Type, strings.Join(roles, ", "))
 	case sectionConnections:
 		connection := m.cfg.Connections[name]
-		return fmt.Sprintf("%s · %s + %s", name, connection.Service, connection.Credential)
+		detail := fmt.Sprintf("%s · %s + %s", name, connection.Service, connection.Credential)
+		if connection.Target != "" {
+			detail += " → " + connection.Target
+		}
+		return detail
 	case sectionDefaults:
 		return fmt.Sprintf("%s → %s", name, m.cfg.Defaults.Connections[name])
 	default:
@@ -1407,24 +1462,24 @@ func padLine(text string, width int) string {
 func (m *Model) nextStep() string {
 	switch {
 	case len(m.cfg.Services) == 0:
-		return "add a Service with your BookStack URL"
+		return "add a Service and choose its provider"
 	case len(m.cfg.Credentials) == 0:
-		return "add Credentials and store both parts of the BookStack API token"
+		return "add Credentials and store the required provider secrets"
 	case len(m.cfg.Connections) == 0:
 		return "add a Connection that combines the service and credentials"
 	case len(m.cfg.Defaults.Connections) == 0:
 		return "open Connections and press t to test; Defaults are optional"
 	default:
-		return "open Connections and press t to test BookStack"
+		return "open Connections and press t to test the selected provider"
 	}
 }
 
 func (m *Model) emptyHelp() string {
 	switch m.section {
 	case sectionServices:
-		return "No services yet. Press n to add the root URL of your BookStack server (without /api)."
+		return "No services yet. Press n to choose a provider and add its API root URL."
 	case sectionCredentials:
-		return "No credentials yet. Press n to add the BookStack token ID and token secret."
+		return "No credentials yet. Press n to add the roles required by a provider."
 	case sectionConnections:
 		if reason := m.newEntryBlocked(); reason != "" {
 			return reason
@@ -1495,7 +1550,7 @@ func (m *Model) fieldHint(f field) string {
 	if f.kind == fieldSecret {
 		if m.editing == "" {
 			var parts []string
-			if description := config.SecretRoleDescription(f.label); description != "" {
+			if description := m.cfg.SecretRoleDescription(f.label); description != "" {
 				parts = append(parts, description)
 			}
 			if f.roleLead {
@@ -1511,20 +1566,29 @@ func (m *Model) fieldHint(f field) string {
 
 // testLine keeps the stable class visible and adds the next useful interpretation for a human.
 func (m *Model) testLine() string {
+	providerName := "the provider"
+	if connection, ok := m.cfg.Connections[m.testName]; ok {
+		if metadata, found := m.cfg.ProviderMetadata(m.cfg.Services[connection.Service].Provider); found {
+			providerName = metadata.Name
+		}
+	}
 	switch {
 	case m.testing:
 		return "\n" + m.wrapped(hintStyle, fmt.Sprintf("testing %s ... (esc cancels)", m.testName))
 	case m.testClass == provider.ClassOK:
 		return "\n" + m.wrapped(activeStyle,
-			fmt.Sprintf("%s: ok - BookStack accepted the connection", m.testName))
+			fmt.Sprintf("%s: ok - %s accepted the connection", m.testName, providerName))
 	case m.testClass != "":
 		explanation := map[provider.Class]string{
 			provider.ClassUnreachable:   "the server did not answer; check the base URL and network",
 			provider.ClassTLS:           "the secure connection failed; check the server certificate and URL",
-			provider.ClassAuth:          "BookStack rejected the token or its user lacks permission",
-			provider.ClassRateLimited:   "BookStack is rate-limiting requests; wait and try again",
-			provider.ClassProviderError: "BookStack returned an unusable response; check the root URL and API access",
+			provider.ClassAuth:          providerName + " rejected the credential or it lacks permission",
+			provider.ClassRateLimited:   providerName + " is rate-limiting requests; wait and try again",
+			provider.ClassProviderError: providerName + " returned an unusable response; check the root URL and API access",
 		}[m.testClass]
+		if providerName == "BookStack" && m.testClass == provider.ClassAuth {
+			explanation = "BookStack rejected the token or its user lacks permission"
+		}
 		return "\n" + m.wrapped(failStyle,
 			fmt.Sprintf("%s: %s - %s", m.testName, m.testClass, explanation))
 	}
@@ -1541,8 +1605,8 @@ func (m *Model) describe(name string) string {
 		// The type decides what the credential is, so it is part of the line rather than something the
 		// reader has to open the form to find out.
 		cred := m.cfg.Credentials[name]
-		parts := make([]string, 0, len(config.SecretRoles()))
-		for _, role := range config.SecretRoles() {
+		parts := make([]string, 0, len(m.cfg.SecretRoles()))
+		for _, role := range m.cfg.SecretRoles() {
 			switch {
 			case cred.Type == config.CredentialTypeKeyring:
 				parts = append(parts, fmt.Sprintf("%s (%s)", role, m.storedSource(name, role)))
@@ -1554,7 +1618,11 @@ func (m *Model) describe(name string) string {
 		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s", name, cred.Type, strings.Join(parts, "  ")))
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
-		return fmt.Sprintf("%s  %s / %s", name, conn.Service, conn.Credential)
+		detail := fmt.Sprintf("%s  %s / %s", name, conn.Service, conn.Credential)
+		if conn.Target != "" {
+			detail += " / " + conn.Target
+		}
+		return detail
 	case sectionDefaults:
 		return fmt.Sprintf("%s  %s", name, m.cfg.Defaults.Connections[name])
 	}

@@ -20,7 +20,7 @@ import (
 func newTestableModel(t *testing.T, tester Tester, red *redact.Redactor) *Model {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "callbell")
-	store := config.NewStore(filepath.Join(dir, "config.yaml"))
+	store := newTestStore(t, filepath.Join(dir, "config.yaml"))
 	secrets, _ := newResolver(t, dir, nil)
 
 	m, err := New(store, tester, secrets, red)
@@ -257,7 +257,7 @@ func TestConnectionTestGuards(t *testing.T) {
 
 	t.Run("an empty list produces no command", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "callbell")
-		store := config.NewStore(filepath.Join(dir, "config.yaml"))
+		store := newTestStore(t, filepath.Join(dir, "config.yaml"))
 		secrets, _ := newResolver(t, dir, nil)
 		m, err := New(store, func(context.Context, string) (provider.Class, error) {
 			return provider.ClassOK, nil

@@ -16,9 +16,21 @@ import (
 
 // fakeRegistry registers two capabilities for the provider the test configuration uses. No provider
 // implementation is involved: discovery answers from the registry alone.
+func registerBookstackTestMetadata(t *testing.T, reg *capability.Registry) {
+	t.Helper()
+	if err := reg.RegisterProvider(config.ProviderMetadata{
+		ID: "bookstack", Name: "BookStack",
+		SecretRoles: []config.SecretRole{{Name: "token-id"}, {Name: "token-secret"}},
+		Target:      config.TargetMetadata{Label: "target"},
+	}, nil); err != nil {
+		t.Fatalf("RegisterProvider() = %v", err)
+	}
+}
+
 func fakeRegistry(t *testing.T) *capability.Registry {
 	t.Helper()
 	reg := capability.NewRegistry()
+	registerBookstackTestMetadata(t, reg)
 	err := reg.Register("bookstack",
 		capability.Operation{
 			Descriptor: capability.Descriptor{
@@ -365,14 +377,23 @@ func TestSearchAndInvokeJSONCommands(t *testing.T) {
 
 // The shipped registry must be wirable without error, even while no provider is registered yet.
 func TestDefaultRegistry(t *testing.T) {
-	if reg := defaultRegistry(); reg == nil {
+	reg := defaultRegistry()
+	if reg == nil {
 		t.Fatal("defaultRegistry() = nil")
 	}
-	got := defaultRegistry().Provider("bookstack")
+	got := reg.Provider("bookstack")
 	if len(got) != 2 {
 		t.Fatalf("provider capabilities = %v, want the two BookStack capabilities", got)
 	}
 	if got[0].ID != "bookstack.pages.get" || got[1].ID != "bookstack.pages.list" {
 		t.Errorf("capabilities = %v", got)
+	}
+	telegram, ok := reg.ProviderMetadata("telegram")
+	if !ok || telegram.DefaultBaseURL != "https://api.telegram.org" || !telegram.Target.Required ||
+		len(telegram.SecretRoles) != 1 || telegram.SecretRoles[0].Name != "bot-token" {
+		t.Errorf("Telegram metadata = %+v, %v", telegram, ok)
+	}
+	if operations := reg.Provider("telegram"); len(operations) != 0 {
+		t.Errorf("Telegram operations = %v, want none before the send task", operations)
 	}
 }

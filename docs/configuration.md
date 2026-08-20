@@ -1,3 +1,12 @@
+---
+description: >
+  Configuration model, provider metadata, credential roles, connection targets and secret resolution for Callbell CLI.
+type: knowledge
+edit: shared
+created: 2026-08-20
+updated: 2026-08-20
+---
+
 # Configuration
 
 Callbell CLI reads one YAML file. A ready-to-edit example is [`examples/config.yaml`](../examples/config.yaml).
@@ -44,9 +53,13 @@ stay free of quoting.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `provider` | yes | Provider type. Currently `bookstack`. |
+| `provider` | yes | Registered provider type. This build provides `bookstack` and `telegram`. |
 | `base_url` | yes | Base URL of the instance. Scheme `https`, or `http` for a local test server. |
-| `options` | no | Non-secret provider-specific options as string values. The BookStack provider reads none of them, so an entry here has no effect today. |
+| `options` | no | Non-secret provider-specific options as string values. |
+
+Provider metadata supplies the available provider IDs, their credential roles, connection target contract
+and TUI defaults. Telegram defaults to `https://api.telegram.org`; the value remains an ordinary service
+`base_url`, so a test endpoint can still be configured explicitly.
 
 ### `credentials`
 
@@ -55,7 +68,9 @@ stay free of quoting.
 | `type` | yes | `keyring` or `env`. |
 | `values` | only for `env` | Map of secret role to environment variable **name**. Must be absent for `keyring`. |
 
-Secret roles are defined by the provider. BookStack requires `token-id` and `token-secret`.
+Secret roles are defined by the provider. BookStack requires `token-id` and `token-secret`; Telegram
+requires `bot-token`. The environment, keyring and explicitly enabled plaintext cascade is identical for
+all of them.
 
 **`type: keyring`** keeps the secrets in the credential store of your platform. The entry names nothing
 else, so this file cannot hold a secret even by accident:
@@ -94,9 +109,25 @@ name.
 | --- | --- | --- |
 | `service` | yes | Name of a service in this file. |
 | `credential` | yes | Name of a credential in this file. |
-| `target` | no | Optional provider-specific scope inside the service. |
+| `target` | provider-specific | Non-secret fixed scope inside the service. It is optional for BookStack and required for Telegram. |
 
 Several connections may reuse the same service, the same credential, or both.
+
+For Telegram, `target` is the fixed chat ID or `@channel` username. It is configuration, never a secret
+and never an operation argument. Separate connections keep separate targets even when they reuse the same
+bot credential:
+
+```yaml
+connections:
+  telegram-alerts:
+    service: telegram-main
+    credential: telegram-notifier
+    target: "-1001111111111"
+  telegram-operations:
+    service: telegram-main
+    credential: telegram-notifier
+    target: "-1002222222222"
+```
 
 ### `defaults`
 

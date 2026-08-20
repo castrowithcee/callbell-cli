@@ -12,7 +12,7 @@ import (
 // sample builds a small but complete configuration in memory. No test uses a real secret.
 func sample(t *testing.T) *Config {
 	t.Helper()
-	cfg := New()
+	cfg := New(testProviders)
 	must(t, cfg.SetService("wiki", Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}))
 	must(t, cfg.SetCredential("reader", Credential{
 		Type:   CredentialTypeEnv,
@@ -33,7 +33,7 @@ func must(t *testing.T, err error) {
 func newTarget(t *testing.T) (*Store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "callbell", "config.yaml")
-	return NewStore(path), path
+	return NewStore(path, testProviders), path
 }
 
 func TestSaveAndLoadRoundTrip(t *testing.T) {
@@ -69,11 +69,11 @@ func TestSecretRoleDescriptionsExplainTheBookStackValues(t *testing.T) {
 		"token-id":     "value labeled Token ID",
 		"token-secret": "value labeled Token Secret",
 	} {
-		if got := SecretRoleDescription(role); !strings.Contains(got, want) {
+		if got := New(testProviders).SecretRoleDescription(role); !strings.Contains(got, want) {
 			t.Errorf("SecretRoleDescription(%q) = %q, want it to contain %q", role, got, want)
 		}
 	}
-	if got := SecretRoleDescription("unknown"); got != "" {
+	if got := New(testProviders).SecretRoleDescription("unknown"); got != "" {
 		t.Errorf("SecretRoleDescription(unknown) = %q, want empty", got)
 	}
 }
@@ -81,7 +81,7 @@ func TestSecretRoleDescriptionsExplainTheBookStackValues(t *testing.T) {
 // An empty configuration must round-trip to the same model as any other.
 func TestSaveAndLoadEmptyRoundTrip(t *testing.T) {
 	store, _ := newTarget(t)
-	cfg := New()
+	cfg := store.New()
 
 	if err := store.Save(cfg); err != nil {
 		t.Fatalf("Save() = %v", err)
@@ -102,14 +102,14 @@ func TestSaveThroughSymlink(t *testing.T) {
 	real := filepath.Join(dir, "real-config.yaml")
 	link := filepath.Join(dir, "config.yaml")
 
-	if err := NewStore(real).Save(New()); err != nil {
+	if err := NewStore(real, testProviders).Save(New(testProviders)); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	if err := NewStore(link).Save(sample(t)); err != nil {
+	if err := NewStore(link, testProviders).Save(sample(t)); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestSaveThroughSymlink(t *testing.T) {
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Error("the symlink was replaced by a regular file")
 	}
-	loaded, err := NewStore(real).Load()
+	loaded, err := NewStore(real, testProviders).Load()
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
@@ -376,7 +376,7 @@ func TestLoadMissingTarget(t *testing.T) {
 func TestSaveCreatesTheFileAndDirectory(t *testing.T) {
 	store, path := newTarget(t)
 
-	if err := store.Save(New()); err != nil {
+	if err := store.Save(store.New()); err != nil {
 		t.Fatalf("Save() = %v", err)
 	}
 

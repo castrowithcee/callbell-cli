@@ -58,6 +58,7 @@ func TestOversizedInvokeStopsBeforeHandler(t *testing.T) {
 		return map[string]any{}, nil
 	})
 	registry := capability.NewRegistry()
+	registerBookstackTestMetadata(t, registry)
 	if err := registry.Register("bookstack", capability.Operation{Descriptor: descriptor, Handler: handler}); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +104,7 @@ func TestInvokeWithoutMatchingConnectionIsASelectionError(t *testing.T) {
 		return map[string]any{}, nil
 	})
 	registry := capability.NewRegistry()
+	registerBookstackTestMetadata(t, registry)
 	if err := registry.Register("bookstack", capability.Operation{Descriptor: descriptor, Handler: handler}); err != nil {
 		t.Fatal(err)
 	}

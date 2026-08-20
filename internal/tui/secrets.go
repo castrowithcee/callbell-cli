@@ -105,7 +105,7 @@ func (m *Model) refreshSources(queries []credQuery) tea.Cmd {
 	id := m.probeID
 	m.probing = "checking where the secrets resolve from"
 
-	secrets, roles := m.secrets, config.SecretRoles()
+	secrets, roles := m.secrets, m.cfg.SecretRoles()
 	return func() tea.Msg {
 		msg := sourcesMsg{
 			id:      id,
@@ -358,7 +358,7 @@ func (m *Model) guardTypeChange() tea.Cmd {
 	id := m.guardID
 	m.probing = "checking what is stored for " + m.editing
 
-	secrets, credential, roles := m.secrets, m.editing, config.SecretRoles()
+	secrets, credential, roles := m.secrets, m.editing, m.cfg.SecretRoles()
 	return func() tea.Msg {
 		msg := placedMsg{id: id, credential: credential, places: map[string]secret.Placement{}}
 		for _, role := range roles {
@@ -383,7 +383,7 @@ func (m *Model) handlePlaced(msg placedMsg) tea.Cmd {
 
 	var held, unsure, causes []string
 	seen := map[string]bool{}
-	for _, role := range config.SecretRoles() {
+	for _, role := range m.cfg.SecretRoles() {
 		place := msg.places[role]
 		for _, source := range place.Holding {
 			held = append(held, fmt.Sprintf("%s: %s", role, source))
@@ -467,7 +467,7 @@ func (m *Model) storedSource(credential, role string) string {
 // foot of the form repeats the keys for whichever row the focus is on.
 func (m *Model) secretRowHint(credential, role string, lead bool) string {
 	var parts []string
-	if description := config.SecretRoleDescription(role); description != "" {
+	if description := m.cfg.SecretRoleDescription(role); description != "" {
 		parts = append(parts, description)
 	}
 	if lead {

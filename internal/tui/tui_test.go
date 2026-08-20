@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -19,6 +20,37 @@ const (
 	canaryID     = "canary-token-id-4f21"
 	canarySecret = "canary-token-secret-9ab3"
 )
+
+func testCatalog(t *testing.T) *capability.Registry {
+	t.Helper()
+	reg := capability.NewRegistry()
+	if err := reg.RegisterProvider(config.ProviderMetadata{
+		ID: "bookstack", Name: "BookStack",
+		SecretRoles: []config.SecretRole{
+			{Name: "token-id", Description: "BookStack token ID: the value labeled Token ID when you create an API token; it is not a name you choose"},
+			{Name: "token-secret", Description: "BookStack token secret: the value labeled Token Secret when you create the same API token"},
+		},
+		Target: config.TargetMetadata{Label: "target", Description: "optional provider-specific scope inside the service"},
+	}, nil); err != nil {
+		t.Fatalf("register test provider: %v", err)
+	}
+	return reg
+}
+
+func newTestStore(t *testing.T, path string) *config.Store {
+	t.Helper()
+	return config.NewStore(path, testCatalog(t))
+}
+
+func newTestConfig(t *testing.T) *config.Config {
+	t.Helper()
+	return config.New(testCatalog(t))
+}
+
+func loadTestConfig(t *testing.T, path string) (*config.Config, error) {
+	t.Helper()
+	return config.Load(path, testCatalog(t))
+}
 
 func newModel(t *testing.T) (*Model, *config.Store, string) {
 	t.Helper()
@@ -30,7 +62,7 @@ func newEnvModel(t *testing.T, env map[string]string) (*Model, *config.Store, st
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "callbell")
 	path := filepath.Join(dir, "config.yaml")
-	store := config.NewStore(path)
+	store := newTestStore(t, path)
 
 	secrets, _ := newResolver(t, dir, env)
 	model, err := New(store, nil, secrets, nil)
@@ -236,7 +268,7 @@ func TestFullConfigurationFlow(t *testing.T) {
 	}
 
 	// The file itself must be loadable by the ordinary loader.
-	if _, err := config.Load(path); err != nil {
+	if _, err := loadTestConfig(t, path); err != nil {
 		t.Errorf("the saved file does not load: %v", err)
 	}
 }
@@ -1283,7 +1315,7 @@ func TestNoHintStandsTwice(t *testing.T) {
 		t.Errorf("the secret keys stand %d times, want once:\n%s", got, view)
 	}
 	// The stages differ per role, so every role keeps its own.
-	if got, want := strings.Count(view, "checked:"), len(config.SecretRoles()); got != want {
+	if got, want := strings.Count(view, "checked:"), len(m.cfg.SecretRoles()); got != want {
 		t.Errorf("the checked stages appear %d times, want once per role (%d):\n%s", got, want, view)
 	}
 }

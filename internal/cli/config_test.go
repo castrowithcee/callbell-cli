@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/castrowithcee/callbell-cli/internal/config"
@@ -75,6 +76,53 @@ func TestConfigValidate(t *testing.T) {
 			}
 			if got := stderr.Len() > 0; got != tt.wantStderr {
 				t.Errorf("stderr non-empty = %v, want %v (stderr: %s)", got, tt.wantStderr, stderr.String())
+			}
+		})
+	}
+}
+
+func TestConfigValidateUsesTelegramProviderMetadata(t *testing.T) {
+	const canary = "canary-telegram-secret-must-not-appear-441"
+	t.Setenv("TELEGRAM_BOT_TOKEN", canary)
+	valid := `version: 1
+services:
+  telegram-main:
+    provider: telegram
+    base_url: https://api.telegram.org
+credentials:
+  notifier:
+    type: env
+    values:
+      bot-token: TELEGRAM_BOT_TOKEN
+connections:
+  alerts:
+    service: telegram-main
+    credential: notifier
+    target: "-1001111111111"
+  operations:
+    service: telegram-main
+    credential: notifier
+    target: "-1002222222222"
+defaults:
+  connections:
+    telegram: alerts
+`
+	for _, tt := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "two distinct targets", body: valid, want: exitOK},
+		{name: "target is required", body: strings.Replace(valid, `    target: "-1001111111111"`, `    target: ""`, 1), want: exitUsage},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := Run([]string{"config", "validate", "--config", writeConfig(t, tt.body)}, &stdout, &stderr)
+			if code != tt.want || stdout.Len() != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+			if strings.Contains(stderr.String(), canary) {
+				t.Fatal("Telegram secret canary reached validation output")
 			}
 		})
 	}
