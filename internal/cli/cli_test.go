@@ -34,7 +34,7 @@ func TestRun(t *testing.T) {
 			args:     []string{"--help"},
 			wantCode: exitOK,
 			wantInStdout: []string{
-				"--config", "--connection", "--agent", "--output", "--fields", "--limit", "--version",
+				"--config", "--connection", "--agent", "--output", "--fields", "--limit", "--version", "update",
 			},
 		},
 		{
@@ -42,6 +42,13 @@ func TestRun(t *testing.T) {
 			args:       []string{"--version"},
 			wantCode:   exitOK,
 			wantStdout: "callbell dev\n",
+		},
+		{
+			name:       "dev build cannot self-update",
+			args:       []string{"update", "--check"},
+			wantCode:   exitUsage,
+			wantStdout: "",
+			wantStderr: true,
 		},
 		{
 			name:       "unknown flag is a usage error",

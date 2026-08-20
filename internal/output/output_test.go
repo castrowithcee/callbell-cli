@@ -300,34 +300,17 @@ func TestParseFormat(t *testing.T) {
 	}
 }
 
-// The documented error codes must stay the ones the build can emit.
-func TestDocumentedCodesMatchTheCode(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "output.md"))
-	if err != nil {
-		t.Fatalf("read the documentation: %v", err)
+// Error codes are a public code contract. Changing the list requires an intentional test update, while
+// human-facing documentation remains outside this repository.
+func TestAllCodesAreStable(t *testing.T) {
+	want := []Code{
+		CodeUsage, CodeInvalidRequest, CodeConfigMissing, CodeConfigInvalid, CodeConnectionSelection,
+		CodeUnknownConnection, CodeConnectionAmbiguous, CodeUnknownOperation, CodeUnsupportedCapability,
+		CodeMissingSecret, CodeConfirmationRequired, CodePolicyDenied, CodeUnreachable, CodeTLS, CodeAuth,
+		CodePermission, CodeTimeout, CodeRateLimited, CodeInvalidProviderResult, CodeProviderError, CodeRuntime,
 	}
-
-	documented := map[string]bool{}
-	for _, line := range strings.Split(string(doc), "\n") {
-		if !strings.HasPrefix(line, "| `") {
-			continue
-		}
-		if name, _, ok := strings.Cut(strings.TrimPrefix(line, "| `"), "`"); ok {
-			documented[name] = true
-		}
-	}
-
-	for _, code := range AllCodes() {
-		if !documented[string(code)] {
-			t.Errorf("the code %q is not documented in docs/output.md", code)
-		}
-		delete(documented, string(code))
-	}
-	for name := range documented {
-		// The table of formats uses the same markup, so only unknown code-like rows matter.
-		if strings.Contains(name, "-") || name == "usage" || name == "runtime" {
-			t.Errorf("docs/output.md documents %q, which the build cannot emit", name)
-		}
+	if got := AllCodes(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("AllCodes() = %v, want %v", got, want)
 	}
 }
 

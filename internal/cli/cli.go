@@ -16,6 +16,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
+	"github.com/castrowithcee/callbell-cli/internal/selfupdate"
 )
 
 // version is overridden at build time with
@@ -38,6 +39,7 @@ type Options struct {
 	Fields     []string
 	Limit      int
 	Input      io.Reader
+	Updater    *selfupdate.Client
 
 	// Format is resolved from Output and Agent before a command runs.
 	Format output.Format
@@ -165,8 +167,19 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		newMCPCommand(opts, reg),
 		newKnowledgeCommand(opts, reg),
 		newTUICommand(opts, reg),
+		newUpdateCommand(opts, version),
 	)
 
+	return cmd
+}
+
+// DocumentationCommand returns the real command tree for release-time documentation generation. It is
+// internal to this module, so the shipped CLI keeps one command definition without exposing a public Go API.
+func DocumentationCommand(buildVersion string) *cobra.Command {
+	opts := &Options{Redactor: &redact.Redactor{}, Input: os.Stdin}
+	cmd := newRootCommand(opts, defaultRegistry())
+	cmd.Version = buildVersion
+	cmd.DisableAutoGenTag = true
 	return cmd
 }
 
