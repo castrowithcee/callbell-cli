@@ -21,6 +21,9 @@ var (
 
 // Encode writes a result to w in the given format. Only requested payload data reaches w.
 func Encode(w io.Writer, format Format, result Result) error {
+	if format == FormatTOON {
+		return encodeTOONDocument(w, result)
+	}
 	switch r := result.(type) {
 	case Collection:
 		switch format {
@@ -42,6 +45,16 @@ func Encode(w io.Writer, format Format, result Result) error {
 		}
 	}
 	return fmt.Errorf("cannot encode %T as %q", result, format)
+}
+
+// encodeTOONDocument writes one TOON document and the terminating newline the encoder deliberately omits.
+func encodeTOONDocument(w io.Writer, value any) error {
+	document, err := MarshalTOON(value)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(document, '\n'))
+	return err
 }
 
 // text renders a scalar for the human and compact formats. A missing value is the empty string.

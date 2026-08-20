@@ -11,11 +11,13 @@ import (
 // Format is a rendering of a result.
 type Format string
 
-// The three MVP formats.
+// The output formats this build renders. TOON follows specification 4.1 and is the discovery default of
+// the tool commands; the other three render scalar table data.
 const (
 	FormatTable   Format = "table"
 	FormatJSON    Format = "json"
 	FormatCompact Format = "compact"
+	FormatTOON    Format = "toon"
 )
 
 // DefaultLimit caps a collection when the caller asks for no specific limit. Zero means no limit.
@@ -24,13 +26,15 @@ const DefaultLimit = 50
 // ParseFormat validates a format name.
 func ParseFormat(s string) (Format, error) {
 	switch Format(s) {
-	case FormatTable, FormatJSON, FormatCompact:
+	case FormatTable, FormatJSON, FormatCompact, FormatTOON:
 		return Format(s), nil
 	}
-	return "", fmt.Errorf("unknown output format %q, want %s, %s, or %s", s, FormatTable, FormatJSON, FormatCompact)
+	return "", fmt.Errorf("unknown output format %q, want %s, %s, %s, or %s",
+		s, FormatTable, FormatJSON, FormatCompact, FormatTOON)
 }
 
-// Field is one named value of an object. Values are scalars: string, bool, int64, float64, or nil.
+// Field is one named value of an object. The table, JSON, and compact formats expect scalars: string,
+// bool, int64, float64, or nil. MarshalTOON additionally accepts nested objects and arrays.
 type Field struct {
 	Name  string
 	Value any
