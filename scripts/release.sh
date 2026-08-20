@@ -47,7 +47,8 @@ printf '%s\n' "$targets" | while read -r goos goarch; do
 	CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
 		-ldflags "-s -w -X github.com/castrowithcee/callbell-cli/internal/cli.version=$version" \
 		-o "$stage/bin/$binary" .
-	cp LICENSE "$stage/LICENSE"
+	mkdir -p "$stage/share/doc/callbell"
+	cp LICENSE "$stage/share/doc/callbell/LICENSE"
 	if [ "$goos" != windows ]; then
 		mkdir -p "$stage/share/man/man1"
 		cp "$man_dir"/*.1 "$stage/share/man/man1/"
