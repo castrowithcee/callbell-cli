@@ -239,7 +239,7 @@ defaults:
 	})
 
 	t.Run("invoke dispatches a known operation directly", func(t *testing.T) {
-		request := `{"operation":"bookstack.pages.get","connection":"primary","arguments":{"id":"1"}}`
+		request := `{"operation":"bookstack.pages.get","connection":"primary","arguments":{"id":1}}`
 		code, stdout, stderr := c.runInput(t, request, "invoke")
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)

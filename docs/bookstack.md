@@ -1,3 +1,12 @@
+---
+description: >
+  BookStack setup, read operations, least-privilege guidance, trust boundaries, and failure behavior.
+type: knowledge
+edit: shared
+created: 2026-08-14
+updated: 2026-08-20
+---
+
 # BookStack
 
 Callbell CLI reads pages from [BookStack](https://www.bookstackapp.com/) over its REST API. Access is
@@ -62,8 +71,8 @@ role limited to viewing the content you want to reach, and issue the token for t
 
 | Capability | Command |
 | --- | --- |
-| `knowledge.pages.list` | `callbell knowledge pages list` |
-| `knowledge.pages.get` | `callbell knowledge pages get <id>` |
+| `bookstack.pages.list` | `callbell knowledge pages list` |
+| `bookstack.pages.get` | `callbell knowledge pages get <id>` |
 
 ```sh
 callbell knowledge pages list --limit 20
@@ -71,8 +80,16 @@ callbell knowledge pages list --connection wiki-audit --fields id,name --agent
 callbell knowledge pages get 42 --output json
 ```
 
-`--limit` and `--offset` are passed to the API. `--fields` selects and orders the returned fields; run
-`callbell describe knowledge.pages.list` to see which fields exist.
+`--limit` and `--offset` are passed to the API. `--fields` selects and orders the returned fields. The
+provider-specific commands dispatch through the same versioned operation handlers as `callbell invoke`.
+
+Search and describe read one JSON request from stdin:
+
+```sh
+printf '%s\n' '{"query":"bookstack pages","effect":"read"}' | callbell search
+printf '%s\n' '{"operation":"bookstack.pages.list"}' | callbell describe
+printf '%s\n' '{"operation":"bookstack.pages.get","arguments":{"id":42}}' | callbell invoke
+```
 
 `--limit 0` fetches every page, in requests of at most 500 records, and holds the whole result in memory
 before writing it. On a large instance prefer a concrete `--limit` with `--offset`. Records are

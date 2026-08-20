@@ -91,7 +91,7 @@ var (
 		Tags:         []string{"knowledge", "pages", "bookstack"},
 		Risk:         bookstackReadRisk,
 		Provider:     Provider,
-		InputSchema:  json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":1}},"required":["id"],"additionalProperties":false}`),
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer","minimum":1}},"required":["id"],"additionalProperties":false}`),
 		OutputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"slug":{"type":"string"},"book_id":{"type":"integer"},"chapter_id":{"type":"integer"},"created_at":{"type":"string"},"updated_at":{"type":"string"},"html":{"type":"string"},"markdown":{"type":"string"}},"required":["id","name","slug","book_id","chapter_id","created_at","updated_at","html","markdown"]}`),
 		Arguments:    []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
 		Fields: []capability.Field{
@@ -107,7 +107,7 @@ var (
 		},
 		Examples: []capability.Example{{
 			Description: "Read page 42",
-			Arguments:   json.RawMessage(`{"id":"42"}`),
+			Arguments:   json.RawMessage(`{"id":42}`),
 		}},
 	}
 )
@@ -156,7 +156,7 @@ func invokePagesList(ctx context.Context, resolved *config.Resolved, secrets *se
 func invokePagesGet(ctx context.Context, resolved *config.Resolved, secrets *secret.Resolver,
 	red *redact.Redactor, raw json.RawMessage) (any, error) {
 	var arguments struct {
-		ID string `json:"id"`
+		ID int64 `json:"id"`
 	}
 	if err := json.Unmarshal(raw, &arguments); err != nil {
 		return nil, err
@@ -165,7 +165,7 @@ func invokePagesGet(ctx context.Context, resolved *config.Resolved, secrets *sec
 	if err != nil {
 		return nil, err
 	}
-	return client.GetPage(ctx, arguments.ID)
+	return client.GetPage(ctx, strconv.FormatInt(arguments.ID, 10))
 }
 
 // Client talks to one BookStack instance with one credential.

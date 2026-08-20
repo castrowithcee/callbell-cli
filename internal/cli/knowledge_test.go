@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +12,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/castrowithcee/callbell-cli/internal/capability"
+	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/output"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 const (
@@ -55,6 +60,15 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	opts := testOptions(t, nil)
+	code := run(newRootCommand(opts, defaultRegistry()), opts, args, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
+func runBookStackRequest(t *testing.T, request string, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	opts := testOptions(t, nil)
+	opts.Input = strings.NewReader(request)
 	code := run(newRootCommand(opts, defaultRegistry()), opts, args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
@@ -155,6 +169,308 @@ func TestKnowledgePagesList(t *testing.T) {
 			t.Errorf("stderr = %q", stderr)
 		}
 	})
+}
+
+func TestKnowledgeCommandsUseApplicationHandlers(t *testing.T) {
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, validConfig)
+
+	reg := capability.NewRegistry()
+	metadata, _ := defaultRegistry().ProviderMetadata("bookstack")
+	if err := reg.RegisterProvider(metadata, nil); err != nil {
+		t.Fatalf("RegisterProvider() = %v", err)
+	}
+	var listCalls, getCalls atomic.Int32
+	registered := defaultRegistry().Provider("bookstack")
+	for _, descriptor := range registered {
+		descriptor := descriptor
+		var handler capability.Handler
+		switch descriptor.ID {
+		case capabilityPagesList:
+			handler = func(_ context.Context, resolved *config.Resolved, _ *secret.Resolver,
+				_ *redact.Redactor, raw json.RawMessage) (any, error) {
+				call := listCalls.Add(1)
+				want := `{"limit":50,"offset":3}`
+				if call == 2 {
+					want = `{"limit":0,"offset":0}`
+				}
+				if resolved.Name != "wiki" || string(raw) != want {
+					t.Errorf("list route = %q, arguments = %s", resolved.Name, raw)
+				}
+				return output.Collection{Columns: capabilityFieldNames(descriptor), Rows: []output.Row{{
+					"id": int64(1), "name": "from-handler", "slug": "from-handler", "book_id": int64(2),
+					"chapter_id": int64(0), "created_at": "created", "updated_at": "updated",
+				}}}, nil
+			}
+		case capabilityPagesGet:
+			handler = func(_ context.Context, resolved *config.Resolved, _ *secret.Resolver,
+				_ *redact.Redactor, raw json.RawMessage) (any, error) {
+				getCalls.Add(1)
+				if resolved.Name != "wiki" || string(raw) != `{"id":7}` {
+					t.Errorf("get route = %q, arguments = %s", resolved.Name, raw)
+				}
+				return output.Object{Fields: []output.Field{
+					{Name: "id", Value: int64(7)}, {Name: "name", Value: "from-handler"},
+					{Name: "slug", Value: "from-handler"}, {Name: "book_id", Value: int64(2)},
+					{Name: "chapter_id", Value: int64(0)}, {Name: "created_at", Value: "created"},
+					{Name: "updated_at", Value: "updated"}, {Name: "html", Value: "<b>untrusted</b>"},
+					{Name: "markdown", Value: "# untrusted"},
+				}}, nil
+			}
+		}
+		if err := reg.Register("bookstack", capability.Operation{Descriptor: descriptor, Handler: handler}); err != nil {
+			t.Fatalf("Register(%s) = %v", descriptor.ID, err)
+		}
+	}
+
+	runCommand := func(args ...string) (int, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		opts := testOptions(t, nil)
+		code := run(newRootCommand(opts, reg), opts, append(args, "--config", cfg, "--output", "json"), &stdout, &stderr)
+		return code, stderr.String()
+	}
+	if code, stderr := runCommand("knowledge", "pages", "list", "--offset", "3"); code != exitOK {
+		t.Fatalf("list exit = %d, stderr = %q", code, stderr)
+	}
+	if code, stderr := runCommand("knowledge", "pages", "get", "7"); code != exitOK {
+		t.Fatalf("get exit = %d, stderr = %q", code, stderr)
+	}
+	if code, stderr := runCommand("knowledge", "pages", "list", "--limit", "-1"); code != exitOK {
+		t.Fatalf("unlimited list exit = %d, stderr = %q", code, stderr)
+	}
+	if listCalls.Load() != 2 || getCalls.Load() != 1 {
+		t.Errorf("handler calls = list %d, get %d, want two and one", listCalls.Load(), getCalls.Load())
+	}
+}
+
+func TestBookStackInvokeRejectsNegativeLimitBeforeProviderCall(t *testing.T) {
+	var calls atomic.Int32
+	reg := capability.NewRegistry()
+	metadata, _ := defaultRegistry().ProviderMetadata("bookstack")
+	if err := reg.RegisterProvider(metadata, nil); err != nil {
+		t.Fatalf("RegisterProvider() = %v", err)
+	}
+	descriptor, _, _ := defaultRegistry().Lookup(capabilityPagesList)
+	if err := reg.Register("bookstack", capability.Operation{Descriptor: descriptor, Handler: func(
+		_ context.Context, _ *config.Resolved, _ *secret.Resolver, _ *redact.Redactor, _ json.RawMessage,
+	) (any, error) {
+		calls.Add(1)
+		return output.Collection{}, nil
+	}}); err != nil {
+		t.Fatalf("Register() = %v", err)
+	}
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, validConfig)
+	request := `{"operation":"bookstack.pages.list","arguments":{"limit":-1}}`
+
+	var stdout, stderr bytes.Buffer
+	opts := testOptions(t, nil)
+	opts.Input = strings.NewReader(request)
+	code := run(newRootCommand(opts, reg), opts, []string{"invoke", "--config", cfg}, &stdout, &stderr)
+	if code != exitUsage || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "callbell: invalid-request:") {
+		t.Errorf("exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if calls.Load() != 0 {
+		t.Errorf("provider calls = %d, want 0", calls.Load())
+	}
+}
+
+func TestBookStackOperationsAreSearchableAndDescribable(t *testing.T) {
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, validConfig)
+
+	code, stdout, stderr := runBookStackRequest(t,
+		`{"query":"pages","provider":"bookstack"}`, "search", "--config", cfg)
+	if code != exitOK || stderr != "" {
+		t.Fatalf("search exit = %d, stderr = %q", code, stderr)
+	}
+	var search struct {
+		Data struct {
+			Operations []struct {
+				ID string `json:"id"`
+			} `json:"operations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &search); err != nil {
+		t.Fatalf("search output = %q: %v", stdout, err)
+	}
+	got := make([]string, len(search.Data.Operations))
+	for i, operation := range search.Data.Operations {
+		got[i] = operation.ID
+	}
+	if want := []string{capabilityPagesGet, capabilityPagesList}; !reflect.DeepEqual(got, want) {
+		t.Errorf("search operations = %v, want %v", got, want)
+	}
+
+	for _, operation := range got {
+		request := fmt.Sprintf(`{"operation":%q,"version":1}`, operation)
+		code, stdout, stderr := runBookStackRequest(t, request, "describe", "--config", cfg)
+		if code != exitOK || stderr != "" {
+			t.Fatalf("describe %s exit = %d, stderr = %q", operation, code, stderr)
+		}
+		var described struct {
+			Data struct {
+				Operation capability.Descriptor `json:"operation"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &described); err != nil {
+			t.Fatalf("describe output = %q: %v", stdout, err)
+		}
+		if described.Data.Operation.ID != operation || described.Data.Operation.Provider != "bookstack" ||
+			described.Data.Operation.Version != 1 {
+			t.Errorf("descriptor = %+v", described.Data.Operation)
+		}
+	}
+}
+
+func TestBookStackOperationsAndCommandsShareRoutesAndResults(t *testing.T) {
+	const (
+		primaryID     = "primary-id-31b5"
+		primarySecret = "primary-secret-a82d"
+		auditID       = "audit-id-84c1"
+		auditSecret   = "audit-secret-92ef"
+	)
+	var primaryCalls, auditCalls atomic.Int32
+	server := func(label, auth string, calls *atomic.Int32) *httptest.Server {
+		t.Helper()
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if got := r.Header.Get("Authorization"); got != auth {
+				t.Errorf("%s authorization = %q, want %q", label, got, auth)
+			}
+			page := map[string]any{
+				"id": 7, "book_id": 3, "chapter_id": 0, "name": label, "slug": label,
+				"created_at": "2026-08-20T00:00:00Z", "updated_at": "2026-08-20T01:00:00Z",
+				"html": "<p>untrusted " + label + "</p>", "markdown": "# untrusted " + label,
+			}
+			if r.URL.Path == "/api/pages" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"total": 1, "data": []any{page}})
+				return
+			}
+			if r.URL.Path == "/api/pages/7" {
+				_ = json.NewEncoder(w).Encode(page)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+	}
+	primary := server("primary", "Token "+primaryID+":"+primarySecret, &primaryCalls)
+	defer primary.Close()
+	audit := server("audit", "Token "+auditID+":"+auditSecret, &auditCalls)
+	defer audit.Close()
+	t.Setenv("PRIMARY_ID", primaryID)
+	t.Setenv("PRIMARY_SECRET", primarySecret)
+	t.Setenv("AUDIT_ID", auditID)
+	t.Setenv("AUDIT_SECRET", auditSecret)
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, fmt.Sprintf(`
+version: 1
+services:
+  primary:
+    provider: bookstack
+    base_url: %s
+  audit:
+    provider: bookstack
+    base_url: %s
+credentials:
+  primary:
+    type: env
+    values:
+      token-id: PRIMARY_ID
+      token-secret: PRIMARY_SECRET
+  audit:
+    type: env
+    values:
+      token-id: AUDIT_ID
+      token-secret: AUDIT_SECRET
+connections:
+  primary:
+    service: primary
+    credential: primary
+  audit:
+    service: audit
+    credential: audit
+defaults:
+  connections:
+    knowledge: primary
+`, primary.URL, audit.URL))
+
+	for _, tt := range []struct {
+		name      string
+		operation string
+		arguments string
+		legacy    []string
+	}{
+		{"list", capabilityPagesList, `{"limit":50,"offset":0}`, []string{"knowledge", "pages", "list"}},
+		{"list with legacy unlimited limit", capabilityPagesList, `{"limit":0,"offset":0}`, []string{"knowledge", "pages", "list", "--limit", "-1"}},
+		{"get", capabilityPagesGet, `{"id":7}`, []string{"knowledge", "pages", "get", "7"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			legacyArgs := append(append([]string{}, tt.legacy...), "--connection", "audit", "--config", cfg, "--output", "json")
+			code, legacy, stderr := runCLI(t, legacyArgs...)
+			if code != exitOK {
+				t.Fatalf("legacy exit = %d, stderr = %q", code, stderr)
+			}
+			request := fmt.Sprintf(`{"operation":%q,"connection":"audit","arguments":%s}`, tt.operation, tt.arguments)
+			code, invoked, stderr := runBookStackRequest(t, request, "invoke", "--config", cfg)
+			if code != exitOK {
+				t.Fatalf("invoke exit = %d, stderr = %q", code, stderr)
+			}
+			var envelope struct {
+				Data struct {
+					Operation  string          `json:"operation"`
+					Version    int             `json:"version"`
+					Connection string          `json:"connection"`
+					Result     json.RawMessage `json:"result"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(invoked), &envelope); err != nil {
+				t.Fatalf("invoke output = %q: %v", invoked, err)
+			}
+			if envelope.Data.Operation != tt.operation || envelope.Data.Version != 1 || envelope.Data.Connection != "audit" {
+				t.Errorf("invoke route = %+v", envelope.Data)
+			}
+			if !jsonEqual([]byte(legacy), envelope.Data.Result) {
+				t.Errorf("legacy result = %s, invoke result = %s", legacy, envelope.Data.Result)
+			}
+		})
+	}
+	if primaryCalls.Load() != 0 || auditCalls.Load() != 6 {
+		t.Errorf("provider calls = primary %d, audit %d, want 0 and 6", primaryCalls.Load(), auditCalls.Load())
+	}
+}
+
+func jsonEqual(a, b []byte) bool {
+	var av, bv any
+	return json.Unmarshal(a, &av) == nil && json.Unmarshal(b, &bv) == nil && reflect.DeepEqual(av, bv)
+}
+
+func TestBookStackInvokeRedactsProviderErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, `{"error":{"message":%q}}`, r.Header.Get("Authorization"))
+	}))
+	defer server.Close()
+	cfg := bookstackConfig(t, server.URL)
+	request := `{"operation":"bookstack.pages.list","arguments":{"limit":1}}`
+
+	code, stdout, stderr := runBookStackRequest(t, request, "invoke", "--config", cfg)
+	if code != exitRuntime || stdout != "" {
+		t.Errorf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	for _, canary := range []string{canaryID, canarySecret} {
+		if strings.Contains(stderr, canary) {
+			t.Errorf("stderr leaks %q: %s", canary, stderr)
+		}
+	}
+	if !strings.Contains(stderr, redact.Marker) {
+		t.Errorf("stderr = %q, want redaction marker", stderr)
+	}
 }
 
 func TestKnowledgeFieldsAreValidatedBeforeProviderCall(t *testing.T) {
