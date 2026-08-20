@@ -53,6 +53,7 @@ type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Version    string
+	Token      string
 	GOOS       string
 	GOARCH     string
 	Executable string
@@ -194,6 +195,9 @@ func (c *Client) request(ctx context.Context, rawURL string, limit int64) ([]byt
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "callbell/"+c.Version)
+	if token := c.token(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	client := c.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -214,6 +218,20 @@ func (c *Client) request(ctx context.Context, rawURL string, limit int64) ([]byt
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
 	return body, nil
+}
+
+func (c *Client) token() string {
+	if c.Token != "" {
+		return c.Token
+	}
+	base := strings.TrimRight(c.BaseURL, "/")
+	if base != "" && base != repositoryAPI {
+		return ""
+	}
+	if token := os.Getenv("GH_TOKEN"); token != "" {
+		return token
+	}
+	return os.Getenv("GITHUB_TOKEN")
 }
 
 func (c *Client) validateAssetURL(rawURL string) error {

@@ -76,6 +76,48 @@ func TestCheckRefusesDevelopmentBuild(t *testing.T) {
 	}
 }
 
+func TestCheckUsesExplicitToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer release-token" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.0.0"})
+	}))
+	defer server.Close()
+
+	client := &Client{
+		BaseURL: server.URL, HTTPClient: server.Client(), Version: "v1.0.0", Token: "release-token",
+	}
+	if _, err := client.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTokenUsesGHEnvironment(t *testing.T) {
+	t.Setenv("GH_TOKEN", "environment-token")
+	if got := (&Client{}).token(); got != "environment-token" {
+		t.Fatalf("token() = %q, want environment token", got)
+	}
+}
+
+func TestCustomBaseURLDoesNotReceiveEnvironmentToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "environment-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			http.Error(w, "unexpected token", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.0.0"})
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, HTTPClient: server.Client(), Version: "v1.0.0"}
+	if _, err := client.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUpdateReplacesBinaryAndManpage(t *testing.T) {
 	archive := releaseArchive(t, []byte("new-binary"), []byte("new-manpage"))
 	server := releaseServer(t, "v1.1.0", archive, "")
