@@ -26,12 +26,40 @@ events contain a fresh request ID and timestamp on stderr.
 | `2` | usage or validation error |
 | `1` | runtime error |
 
-## Agent commands
+## Agent JSON commands
 
 `callbell search`, `callbell describe`, and `callbell invoke` each read exactly one JSON object from stdin.
 A request is limited to 1 MiB, including surrounding whitespace.
 A successful call writes one stable `{"data": ...}` JSON envelope to stdout. Diagnostics and errors remain
 on stderr, and failures write no stdout payload.
+
+## MCP stdio
+
+`callbell mcp` serves MCP protocol version `2026-07-28` over stdio and opens no network listener. It follows
+the official [newline-delimited stdio binding](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio):
+stdin carries one JSON-RPC request or notification per line, stdout carries only one-line JSON-RPC
+responses, and stderr remains available for safe diagnostics and mutation audit events. Each input message
+is limited to 1 MiB.
+
+The server implements `server/discover`, `tools/list`, `tools/call`, and
+`notifications/cancelled`. Every request uses the protocol version and client capabilities from its MCP
+`_meta` object. Tool calls have a 30 second deadline; a cancellation notification cancels the matching
+application context and produces no later response for that request. Closing stdin lets already accepted
+requests finish and then shuts the process down.
+
+The tool list is fixed and independent of how many providers and operations are registered:
+
+| Tool | Application-core request |
+| --- | --- |
+| `callbell.search` | Search operation contracts |
+| `callbell.describe` | Describe one operation contract |
+| `callbell.invoke` | Invoke one operation |
+
+A successful tool result contains `resultType: "complete"`, typed `structuredContent`, and the same value
+serialized as a text content block for compatibility. Errors from a valid tool invocation are safe tool
+results with `isError: true` and one of the existing provider-independent Callbell codes. Malformed
+JSON-RPC requests and unknown tools are MCP protocol errors instead. This separation follows the official
+[MCP tools error and structured-content contract](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
 
 ## Formats
 

@@ -162,6 +162,7 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		newSearchCommand(opts, reg),
 		newDescribeCommand(opts, reg),
 		newInvokeCommand(opts, reg),
+		newMCPCommand(opts, reg),
 		newKnowledgeCommand(opts, reg),
 		newTUICommand(opts, reg),
 	)

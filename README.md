@@ -86,6 +86,14 @@ Results are available as an aligned table, as lossless JSON, or as a compact mac
 selects automatically. Field order, exit codes, and error codes are a stable contract described in
 [docs/output.md](docs/output.md).
 
+## Agent access
+
+Agents can use the one-request JSON commands `callbell search`, `callbell describe`, and `callbell invoke`,
+or start `callbell mcp` as an MCP stdio subprocess. The MCP surface exposes the same three operations as
+the fixed tools `callbell.search`, `callbell.describe`, and `callbell.invoke`; adding providers or provider
+operations does not add tools. Both transports call the same application core. See
+[docs/output.md](docs/output.md) for the stream, error, and cancellation contract.
+
 ## Development
 
 Working on the code itself needs no installed binary:
