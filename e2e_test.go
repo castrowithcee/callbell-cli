@@ -2,13 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/castrowithcee/callbell-cli/internal/redact"
@@ -442,6 +446,337 @@ defaults:
 				if strings.Contains(data, canary) {
 					t.Errorf("the canary %q reached the file %s", canary, path)
 				}
+			}
+		}
+	})
+}
+
+const (
+	telegramTokenA       = "101001:telegram-token-canary-a"
+	telegramTokenB       = "101002:telegram-token-canary-b"
+	telegramTargetA      = "-100770011001"
+	telegramTargetB      = "-100770011002"
+	telegramSuccessText  = "telegram-success-canary-7a11"
+	telegramFailureText  = "telegram-failure-canary-8b22"
+	telegramUnclearText  = "telegram-unclear-canary-9c33"
+	telegramProviderBody = "telegram-provider-body-canary-ad44"
+	mcpMeta              = `"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}`
+)
+
+type telegramProbe struct {
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+func (p *telegramProbe) count(text string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls[text]
+}
+
+// telegramMock is a local TLS endpoint for the built binary. The process trusts only its generated
+// certificate through SSL_CERT_FILE, so no real Telegram request is possible during the acceptance run.
+func telegramMock(t *testing.T, dir string) (*httptest.Server, string, *telegramProbe) {
+	t.Helper()
+	probe := &telegramProbe{calls: map[string]int{}}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ChatID string `json:"chat_id"`
+			Text   string `json:"text"`
+		}
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/sendMessage") ||
+			json.NewDecoder(r.Body).Decode(&request) != nil {
+			t.Errorf("Telegram request = %s %s", r.Method, r.URL.Path)
+			http.Error(w, "invalid test request", http.StatusBadRequest)
+			return
+		}
+		wantToken, wantTarget := telegramTokenA, telegramTargetA
+		if request.Text == telegramFailureText || request.Text == telegramUnclearText {
+			wantToken, wantTarget = telegramTokenB, telegramTargetB
+		}
+		if r.URL.Path != "/bot"+wantToken+"/sendMessage" || request.ChatID != wantTarget {
+			t.Errorf("Telegram route = %q, target = %q", r.URL.Path, request.ChatID)
+		}
+		probe.mu.Lock()
+		probe.calls[request.Text]++
+		probe.mu.Unlock()
+		if request.Text == telegramUnclearText {
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking ambiguous Telegram result: %v", err)
+				return
+			}
+			_ = connection.Close()
+			return
+		}
+		if request.Text == telegramFailureText {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, `{"ok":false,"description":%q}`, telegramProviderBody+wantToken+wantTarget+request.Text)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "result": map[string]any{"message_id": 701, "date": 1_787_171_200},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	certificatePath := filepath.Join(dir, "telegram-test-ca.pem")
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatalf("writing Telegram test CA: %v", err)
+	}
+	return server, certificatePath, probe
+}
+
+type mcpResponse struct {
+	ID     json.RawMessage `json:"id"`
+	Result struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		Structured json.RawMessage `json:"structuredContent"`
+		IsError    bool            `json:"isError"`
+	} `json:"result"`
+	Error json.RawMessage `json:"error"`
+}
+
+func decodeMCP(t *testing.T, stdout string) map[string]mcpResponse {
+	t.Helper()
+	responses := map[string]mcpResponse{}
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	for {
+		var response mcpResponse
+		if err := decoder.Decode(&response); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("decoding MCP output %q: %v", stdout, err)
+		}
+		responses[strings.Trim(string(response.ID), `"`)] = response
+	}
+	return responses
+}
+
+func jsonCLIData(t *testing.T, stdout string) any {
+	t.Helper()
+	var envelope struct {
+		Data any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decoding JSON CLI output %q: %v", stdout, err)
+	}
+	return envelope.Data
+}
+
+func mcpData(t *testing.T, response mcpResponse) any {
+	t.Helper()
+	if len(response.Error) != 0 || response.Result.IsError {
+		t.Fatalf("MCP response is an error: %+v", response)
+	}
+	var value any
+	if err := json.Unmarshal(response.Result.Structured, &value); err != nil {
+		t.Fatalf("decoding MCP structured content %q: %v", response.Result.Structured, err)
+	}
+	return value
+}
+
+func assertAudit(t *testing.T, stderr, wantConnection, wantResult string, canaries []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	var event map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+		t.Fatalf("last stderr line is not an audit event: %q: %v", stderr, err)
+	}
+	if len(event) != 6 || event["operation"] != "telegram.messages.send" ||
+		event["connection"] != wantConnection || event["confirmed"] != true ||
+		event["result"] != wantResult || event["request_id"] == "" || event["time"] == "" {
+		t.Fatalf("audit event = %#v", event)
+	}
+	for _, canary := range canaries {
+		if strings.Contains(stderr, canary) {
+			t.Errorf("audit or diagnostic leaks canary %q: %s", canary, stderr)
+		}
+	}
+}
+
+// TestOperationsMVPEndToEnd closes the acceptance gap left by the older BookStack-only binary run. It
+// proves the same Search/Describe/Invoke data over JSON CLI and MCP, and drives Telegram's confirmation,
+// fixed-route, audit, and no-retry boundaries without contacting a real provider.
+func TestOperationsMVPEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("the acceptance run builds the binary")
+	}
+
+	dir := t.TempDir()
+	bin := buildBinary(t, dir)
+	wiki := mock(t, "Token "+canaryPrimaryID+":"+canaryPrimarySecret,
+		[]map[string]any{page(1, "MVP Runbook")}, "<p>MVP</p>")
+	telegram, certificatePath, probe := telegramMock(t, dir)
+	configPath := filepath.Join(dir, "config.yaml")
+	config := fmt.Sprintf(`version: 1
+services:
+  wiki:
+    provider: bookstack
+    base_url: %s
+  telegram:
+    provider: telegram
+    base_url: %s
+credentials:
+  wiki-reader:
+    type: env
+    values:
+      token-id: MVP_WIKI_ID
+      token-secret: MVP_WIKI_SECRET
+  bot-a:
+    type: env
+    values:
+      bot-token: MVP_BOT_A
+  bot-b:
+    type: env
+    values:
+      bot-token: MVP_BOT_B
+connections:
+  wiki-primary:
+    service: wiki
+    credential: wiki-reader
+  wiki-audit:
+    service: wiki
+    credential: wiki-reader
+  telegram-alerts:
+    service: telegram
+    credential: bot-a
+    target: %q
+  telegram-operations:
+    service: telegram
+    credential: bot-b
+    target: %q
+defaults: {}
+`, wiki.URL, telegram.URL, telegramTargetA, telegramTargetB)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("writing MVP configuration: %v", err)
+	}
+
+	var seen strings.Builder
+	c := &runner{bin: bin, seen: &seen, env: []string{
+		"HOME=" + dir,
+		"PATH=" + os.Getenv("PATH"),
+		"SSL_CERT_FILE=" + certificatePath,
+		"CALLBELL_CONFIG=" + configPath,
+		secret.StoreSelector + "=none",
+		"MVP_WIKI_ID=" + canaryPrimaryID,
+		"MVP_WIKI_SECRET=" + canaryPrimarySecret,
+		"MVP_BOT_A=" + telegramTokenA,
+		"MVP_BOT_B=" + telegramTokenB,
+	}}
+	canaries := []string{
+		canaryPrimaryID, canaryPrimarySecret, telegramTokenA, telegramTokenB,
+		telegramTargetA, telegramTargetB, telegramSuccessText, telegramFailureText, telegramUnclearText,
+		telegramProviderBody,
+	}
+
+	t.Run("configuration and several connections validate", func(t *testing.T) {
+		code, stdout, stderr := c.run(t, "config", "validate")
+		if code != 0 || stdout != "" || stderr != "" {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
+	t.Run("JSON CLI and MCP share discovery and BookStack invoke", func(t *testing.T) {
+		requests := map[string]string{
+			"search":   `{"query":"pages","provider":"bookstack"}`,
+			"describe": `{"operation":"bookstack.pages.get","version":1}`,
+			"invoke":   `{"operation":"bookstack.pages.get","connection":"wiki-primary","arguments":{"id":1}}`,
+		}
+		cliData := map[string]any{}
+		for _, name := range []string{"search", "describe", "invoke"} {
+			code, stdout, stderr := c.runInput(t, requests[name], name)
+			if code != 0 || stderr != "" {
+				t.Fatalf("JSON CLI %s exit=%d stderr=%q", name, code, stderr)
+			}
+			cliData[name] = jsonCLIData(t, stdout)
+		}
+		input := strings.Join([]string{
+			`{"jsonrpc":"2.0","id":"search","method":"tools/call","params":{` + mcpMeta + `,"name":"callbell.search","arguments":` + requests["search"] + `}}`,
+			`{"jsonrpc":"2.0","id":"describe","method":"tools/call","params":{` + mcpMeta + `,"name":"callbell.describe","arguments":` + requests["describe"] + `}}`,
+			`{"jsonrpc":"2.0","id":"invoke","method":"tools/call","params":{` + mcpMeta + `,"name":"callbell.invoke","arguments":` + requests["invoke"] + `}}`,
+		}, "\n") + "\n"
+		code, stdout, stderr := c.runInput(t, input, "mcp")
+		if code != 0 || stderr != "" {
+			t.Fatalf("MCP exit=%d stderr=%q", code, stderr)
+		}
+		responses := decodeMCP(t, stdout)
+		for _, name := range []string{"search", "describe", "invoke"} {
+			if !reflect.DeepEqual(cliData[name], mcpData(t, responses[name])) {
+				t.Errorf("%s differs: JSON CLI=%#v MCP=%s", name, cliData[name], responses[name].Result.Structured)
+			}
+		}
+	})
+
+	t.Run("ambiguous BookStack selection stops locally", func(t *testing.T) {
+		request := `{"operation":"bookstack.pages.list","arguments":{"limit":1}}`
+		code, stdout, stderr := c.runInput(t, request, "invoke")
+		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "callbell: connection-ambiguous: ") {
+			t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
+	t.Run("unconfirmed Telegram send stops before provider IO and audit", func(t *testing.T) {
+		request := `{"operation":"telegram.messages.send","connection":"telegram-alerts","arguments":{"text":"` + telegramSuccessText + `"}}`
+		code, stdout, stderr := c.runInput(t, request, "invoke")
+		if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "callbell: confirmation-required: ") ||
+			strings.Contains(stderr, `"request_id"`) || probe.count(telegramSuccessText) != 0 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q provider calls=%d", code, stdout, stderr, probe.count(telegramSuccessText))
+		}
+	})
+
+	t.Run("confirmed Telegram send matches over JSON CLI and MCP", func(t *testing.T) {
+		arguments := `{"operation":"telegram.messages.send","connection":"telegram-alerts","arguments":{"text":"` + telegramSuccessText + `"},"confirm":true}`
+		before := probe.count(telegramSuccessText)
+		code, stdout, stderr := c.runInput(t, arguments, "invoke")
+		if code != 0 || probe.count(telegramSuccessText) != before+1 {
+			t.Fatalf("JSON CLI exit=%d stderr=%q calls=%d", code, stderr, probe.count(telegramSuccessText)-before)
+		}
+		cliResult := jsonCLIData(t, stdout)
+		assertAudit(t, stderr, "telegram-alerts", "success", canaries)
+
+		input := `{"jsonrpc":"2.0","id":"send","method":"tools/call","params":{` + mcpMeta +
+			`,"name":"callbell.invoke","arguments":` + arguments + `}}` + "\n"
+		before = probe.count(telegramSuccessText)
+		code, stdout, stderr = c.runInput(t, input, "mcp")
+		if code != 0 || probe.count(telegramSuccessText) != before+1 {
+			t.Fatalf("MCP exit=%d stderr=%q calls=%d", code, stderr, probe.count(telegramSuccessText)-before)
+		}
+		if got := mcpData(t, decodeMCP(t, stdout)["send"]); !reflect.DeepEqual(cliResult, got) {
+			t.Errorf("Telegram invoke differs: JSON CLI=%#v MCP=%#v", cliResult, got)
+		}
+		assertAudit(t, stderr, "telegram-alerts", "success", canaries)
+	})
+
+	t.Run("failed Telegram send keeps provider details private", func(t *testing.T) {
+		request := `{"operation":"telegram.messages.send","connection":"telegram-operations","arguments":{"text":"` + telegramFailureText + `"},"confirm":true}`
+		before := probe.count(telegramFailureText)
+		code, stdout, stderr := c.runInput(t, request, "invoke")
+		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "callbell: provider-error: ") ||
+			probe.count(telegramFailureText) != before+1 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q calls=%d", code, stdout, stderr, probe.count(telegramFailureText)-before)
+		}
+		assertAudit(t, stderr, "telegram-operations", "provider-error", canaries)
+	})
+
+	t.Run("ambiguous Telegram network result is not retried", func(t *testing.T) {
+		request := `{"operation":"telegram.messages.send","connection":"telegram-operations","arguments":{"text":"` + telegramUnclearText + `"},"confirm":true}`
+		before := probe.count(telegramUnclearText)
+		code, stdout, stderr := c.runInput(t, request, "invoke")
+		if code != 1 || stdout != "" || !strings.HasPrefix(stderr, "callbell: unreachable: ") ||
+			probe.count(telegramUnclearText) != before+1 {
+			t.Fatalf("exit=%d stdout=%q stderr=%q calls=%d", code, stdout, stderr, probe.count(telegramUnclearText)-before)
+		}
+		assertAudit(t, stderr, "telegram-operations", "unreachable", canaries)
+	})
+
+	t.Run("no secret target content or provider canary reached output", func(t *testing.T) {
+		for _, canary := range canaries {
+			if strings.Contains(seen.String(), canary) {
+				t.Errorf("the canary %q reached stdout or stderr", canary)
 			}
 		}
 	})

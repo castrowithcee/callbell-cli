@@ -13,7 +13,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
-func TestProviderMetadataDrivesTelegramFormsAndTargets(t *testing.T) {
+func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	reg := capability.NewRegistry()
 	if err := bookstack.Register(reg); err != nil {
 		t.Fatal(err)
@@ -51,9 +51,13 @@ func TestProviderMetadataDrivesTelegramFormsAndTargets(t *testing.T) {
 		t.Fatalf("credential fields = %+v, want Telegram bot-token from the registry", credentialFields)
 	}
 	m.cfg.Services["telegram-main"] = config.Service{Provider: "telegram", BaseURL: "https://api.telegram.org"}
+	m.cfg.Services["wiki-main"] = config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}
 	m.cfg.Credentials["notifier"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.cfg.Credentials["reader"] = config.Credential{Type: config.CredentialTypeKeyring}
 	m.cfg.Connections["alerts"] = config.Connection{Service: "telegram-main", Credential: "notifier", Target: "-1001"}
 	m.cfg.Connections["operations"] = config.Connection{Service: "telegram-main", Credential: "notifier", Target: "-1002"}
+	m.cfg.Connections["wiki-primary"] = config.Connection{Service: "wiki-main", Credential: "reader"}
+	m.cfg.Connections["wiki-audit"] = config.Connection{Service: "wiki-main", Credential: "reader"}
 	m.section = sectionConnections
 	connectionFields := m.buildFields("alerts")
 	if connectionFields[3].value() != "-1001" || !strings.Contains(connectionFields[3].hint, "required for Telegram") {
@@ -61,5 +65,10 @@ func TestProviderMetadataDrivesTelegramFormsAndTargets(t *testing.T) {
 	}
 	if got := m.dashboardEntry(sectionConnections, "operations"); !strings.Contains(got, "-1002") {
 		t.Fatalf("dashboard entry = %q, want distinct target", got)
+	}
+	for _, name := range []string{"wiki-primary", "wiki-audit"} {
+		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, name+" · wiki-main + reader") {
+			t.Fatalf("BookStack dashboard entry = %q, want named connection %q", got, name)
+		}
 	}
 }

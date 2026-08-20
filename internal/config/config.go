@@ -180,9 +180,9 @@ var yamlProblems = []struct{ match, problem string }{
 // never the text that caused it. The library quotes the offending key or value, and a user can type a
 // secret in either place, so the whole message has to be rebuilt rather than filtered.
 //
-// callbell-dev: the kinds are matched on message fragments; an unrecognized message keeps its position
-// and loses its explanation. That is the deliberate trade against quoting the file. Extend the table when
-// the library gains a message worth naming.
+// The kinds are matched on message fragments; an unrecognized message keeps its position and loses its
+// explanation. That is the deliberate trade against quoting the file. Extend the table when the library
+// gains a message worth naming.
 func redactDecodeError(err error) error {
 	messages := []string{strings.TrimPrefix(err.Error(), "yaml: ")}
 	var typeErr *yaml.TypeError

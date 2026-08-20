@@ -34,9 +34,9 @@ const (
 // means to switch the store off, and quietly doing the opposite is the one outcome they did not ask for.
 // The message names the accepted values without quoting what was written.
 //
-// callbell-dev: github.com/zalando/go-keyring is the whole dependency here. It is small, has no cgo, and
-// covers exactly the three platforms this project targets. Anything richer would add a backend zoo that
-// nothing in the cascade needs.
+// github.com/zalando/go-keyring is the whole dependency here. It is small, has no cgo, and covers exactly
+// the three platforms this project targets. Anything richer would add a backend zoo that nothing in the
+// cascade needs.
 func SystemStore() (Store, error) {
 	switch os.Getenv(StoreSelector) {
 	case "", StoreAuto:

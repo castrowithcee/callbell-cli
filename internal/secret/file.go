@@ -138,10 +138,10 @@ func (e *PermissionError) Error() string {
 // place in this project where a secret sits in clear text, so a widened mode is a defect to report rather
 // than a detail to ignore, the same way ssh refuses a private key that others can read.
 //
-// callbell-dev: Windows is exempt because the check cannot mean anything there. Access is governed by
-// ACLs, and os.Stat synthesises a mode from the read-only attribute alone, so every ordinary file reports
-// 0666 and would be refused. The Credential Manager is the real store on that platform anyway; the
-// fallback exists for a Unix machine without a running secret service.
+// Windows is exempt because the check cannot mean anything there. Access is governed by ACLs, and os.Stat
+// synthesises a mode from the read-only attribute alone, so every ordinary file reports 0666 and would be
+// refused. The Credential Manager is the real store on that platform anyway; the fallback exists for a
+// Unix machine without a running secret service.
 func checkMode(path string, info fs.FileInfo) error {
 	if runtime.GOOS == "windows" {
 		return nil
