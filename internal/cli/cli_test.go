@@ -136,6 +136,28 @@ func TestRunRuntimeError(t *testing.T) {
 	}
 }
 
+func TestRunWritesUsageBeforeCarriedAudit(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opts := &Options{Redactor: &redact.Redactor{}}
+	cmd := newRootCommand(opts, defaultRegistry())
+	cmd.RunE = func(*cobra.Command, []string) error {
+		return withAudit(&UsageError{errors.New("confirmed usage failure")},
+			[]byte(`{"request_id":"audit-id","result":"error"}`+"\n"))
+	}
+
+	code := run(cmd, opts, nil, &stdout, &stderr)
+	if code != exitUsage || stdout.Len() != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	value := stderr.String()
+	diagnostic := strings.Index(value, "callbell: usage: confirmed usage failure\n")
+	usage := strings.Index(value, "Usage:")
+	audit := strings.Index(value, `{"request_id":"audit-id","result":"error"}`)
+	if diagnostic != 0 || usage < 0 || audit < 0 || !(diagnostic < usage && usage < audit) {
+		t.Fatalf("stderr order is diagnostic, usage, audit: %q", value)
+	}
+}
+
 // Options receive the parsed global flags so the application core can consume them as a value.
 func TestOptionsAreParsed(t *testing.T) {
 	opts := &Options{}

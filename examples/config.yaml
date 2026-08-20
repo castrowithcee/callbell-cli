@@ -79,8 +79,8 @@ connections:
     credential: telegram-notifier
     target: "-1002222222222"
 
-# Which connection a domain uses when --connection is not given.
+# Defaults are useful for read operations. Confirmed Telegram sends deliberately ignore defaults and
+# require the connection in the exact invoke request.
 defaults:
   connections:
     knowledge: wiki
-    telegram: telegram-alerts

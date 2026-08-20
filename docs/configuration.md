@@ -54,12 +54,12 @@ stay free of quoting.
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `provider` | yes | Registered provider type. This build provides `bookstack` and `telegram`. |
-| `base_url` | yes | Base URL of the instance. Scheme `https`, or `http` for a local test server. |
+| `base_url` | yes | Base URL of the instance. The schema accepts `https` and `http`; providers enforce their transport boundary. |
 | `options` | no | Non-secret provider-specific options as string values. |
 
 Provider metadata supplies the available provider IDs, their credential roles, connection target contract
-and TUI defaults. Telegram defaults to `https://api.telegram.org`; the value remains an ordinary service
-`base_url`, so a test endpoint can still be configured explicitly.
+and TUI defaults. Telegram defaults to `https://api.telegram.org`; both sends and its `getMe` connection
+test require a plain HTTPS base URL before the bot token is resolved.
 
 ### `credentials`
 
@@ -129,6 +129,10 @@ connections:
     target: "-1002222222222"
 ```
 
+`telegram.messages.send` always requires the connection in the JSON invoke request. A Telegram provider
+or operation default is intentionally ignored for this mutation, even when only one Telegram connection
+exists. This keeps the selected bot and fixed target inside the exact request that is confirmed.
+
 ### `defaults`
 
 ```yaml
@@ -138,7 +142,8 @@ defaults:
 ```
 
 `defaults.connections.<domain>` names the connection a domain uses when `--connection` is not given. A
-domain can have at most one default; a repeated domain key is rejected when the file is read.
+domain can have at most one default; a repeated domain key is rejected when the file is read. Operations
+whose descriptor requires an explicit connection do not consult these defaults.
 
 ## Selecting a connection
 

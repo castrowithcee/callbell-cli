@@ -77,18 +77,19 @@ type Example struct {
 // Descriptor is the versioned contract of one provider operation, for example bookstack.pages.list.
 // Schemas use JSON Schema's object form. Every configured connection of Provider shares the descriptor.
 type Descriptor struct {
-	ID           string          `json:"id"`
-	Version      int             `json:"version"`
-	Title        string          `json:"title"`
-	Description  string          `json:"description"`
-	Tags         []string        `json:"tags"`
-	Risk         Risk            `json:"risk"`
-	Provider     string          `json:"provider"`
-	InputSchema  json.RawMessage `json:"input_schema"`
-	OutputSchema json.RawMessage `json:"output_schema"`
-	Arguments    []Argument      `json:"arguments"`
-	Fields       []Field         `json:"fields"`
-	Examples     []Example       `json:"examples"`
+	ID                         string          `json:"id"`
+	Version                    int             `json:"version"`
+	Title                      string          `json:"title"`
+	Description                string          `json:"description"`
+	Tags                       []string        `json:"tags"`
+	Risk                       Risk            `json:"risk"`
+	Provider                   string          `json:"provider"`
+	RequiresExplicitConnection bool            `json:"requires_explicit_connection"`
+	InputSchema                json.RawMessage `json:"input_schema"`
+	OutputSchema               json.RawMessage `json:"output_schema"`
+	Arguments                  []Argument      `json:"arguments"`
+	Fields                     []Field         `json:"fields"`
+	Examples                   []Example       `json:"examples"`
 }
 
 // Handler is the provider-independent dispatch seam used by the application core. Implementations open

@@ -34,11 +34,18 @@ func (e *ConnectionAmbiguousError) Error() string {
 		e.Operation, strings.Join(e.Connections, ", "))
 }
 
-// ConnectionSelectionError reports a registered operation for which no configured connection can be
-// selected. It names no CLI flag because agent requests carry their connection in JSON.
-type ConnectionSelectionError struct{ Operation string }
+// ConnectionSelectionError reports a registered operation for which no connection can be selected.
+// ExplicitRequired distinguishes an operation contract that deliberately refuses defaults and the
+// single-connection fallback. Agent requests carry that connection in JSON rather than a CLI flag.
+type ConnectionSelectionError struct {
+	Operation        string
+	ExplicitRequired bool
+}
 
 func (e *ConnectionSelectionError) Error() string {
+	if e.ExplicitRequired {
+		return fmt.Sprintf("operation %q requires an explicit connection in this invoke request", e.Operation)
+	}
 	return fmt.Sprintf("no configured connection can invoke operation %q", e.Operation)
 }
 

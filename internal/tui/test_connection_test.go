@@ -47,12 +47,15 @@ func runTest(t *testing.T, m *Model) {
 // Every stable class reaches the editor unchanged.
 func TestConnectionTestClasses(t *testing.T) {
 	classes := map[provider.Class]string{
-		provider.ClassOK:            "accepted the connection",
-		provider.ClassUnreachable:   "check the base URL and network",
-		provider.ClassTLS:           "check the server certificate and URL",
-		provider.ClassAuth:          "rejected the token or its user lacks permission",
-		provider.ClassRateLimited:   "wait and try again",
-		provider.ClassProviderError: "check the root URL and API access",
+		provider.ClassOK:              "accepted the connection",
+		provider.ClassUnreachable:     "check the base URL and network",
+		provider.ClassTLS:             "check the server certificate and URL",
+		provider.ClassAuth:            "rejected the token or its user lacks permission",
+		provider.ClassPermission:      "accepted the credential but refused the operation",
+		provider.ClassTimeout:         "did not answer before the request deadline",
+		provider.ClassRateLimited:     "wait and try again",
+		provider.ClassInvalidResponse: "returned an invalid response",
+		provider.ClassProviderError:   "check the root URL and API access",
 	}
 
 	for want, explanation := range classes {

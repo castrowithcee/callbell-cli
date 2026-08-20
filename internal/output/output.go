@@ -149,6 +149,8 @@ const (
 	CodeUnreachable           Code = "unreachable"
 	CodeTLS                   Code = "tls"
 	CodeAuth                  Code = "auth"
+	CodePermission            Code = "permission"
+	CodeTimeout               Code = "timeout"
 	CodeRateLimited           Code = "rate-limited"
 	CodeInvalidProviderResult Code = "invalid-provider-response"
 	CodeProviderError         Code = "provider-error"
@@ -161,7 +163,7 @@ func AllCodes() []Code {
 		CodeUsage, CodeInvalidRequest, CodeConfigMissing, CodeConfigInvalid, CodeConnectionSelection,
 		CodeUnknownConnection, CodeConnectionAmbiguous, CodeUnknownOperation, CodeUnsupportedCapability,
 		CodeMissingSecret, CodeConfirmationRequired, CodePolicyDenied, CodeUnreachable, CodeTLS, CodeAuth,
-		CodeRateLimited, CodeInvalidProviderResult, CodeProviderError, CodeRuntime,
+		CodePermission, CodeTimeout, CodeRateLimited, CodeInvalidProviderResult, CodeProviderError, CodeRuntime,
 	}
 }
 

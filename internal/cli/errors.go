@@ -86,8 +86,14 @@ func providerCode(class provider.Class) output.Code {
 		return output.CodeTLS
 	case provider.ClassAuth:
 		return output.CodeAuth
+	case provider.ClassPermission:
+		return output.CodePermission
+	case provider.ClassTimeout:
+		return output.CodeTimeout
 	case provider.ClassRateLimited:
 		return output.CodeRateLimited
+	case provider.ClassInvalidResponse:
+		return output.CodeInvalidProviderResult
 	default:
 		return output.CodeProviderError
 	}

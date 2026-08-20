@@ -7,14 +7,17 @@ import "fmt"
 // Class is the stable outcome of a connection test. Callers branch on it instead of on message text.
 type Class string
 
-// The connection test classes.
+// Stable provider outcome classes used by connection tests and operations.
 const (
-	ClassOK            Class = "ok"
-	ClassUnreachable   Class = "unreachable"
-	ClassTLS           Class = "tls"
-	ClassAuth          Class = "auth"
-	ClassRateLimited   Class = "rate-limited"
-	ClassProviderError Class = "provider-error"
+	ClassOK              Class = "ok"
+	ClassUnreachable     Class = "unreachable"
+	ClassTLS             Class = "tls"
+	ClassAuth            Class = "auth"
+	ClassPermission      Class = "permission"
+	ClassTimeout         Class = "timeout"
+	ClassRateLimited     Class = "rate-limited"
+	ClassInvalidResponse Class = "invalid-provider-response"
+	ClassProviderError   Class = "provider-error"
 )
 
 // Error is a provider failure normalised to a class. Its message never carries credentials, headers, or

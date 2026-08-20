@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -175,6 +176,113 @@ func TestInvokeDispatchesReadAndConfirmedMutation(t *testing.T) {
 	}
 	if *calls != 2 {
 		t.Errorf("provider calls = %d, want 2", *calls)
+	}
+}
+
+func TestExplicitConnectionAndConfirmationPrecedeSecretsIOAndAudit(t *testing.T) {
+	secretReads, handlerCalls := 0, 0
+	descriptor := testDescriptor("fake.messages.send", capability.EffectCreate, capability.ConfirmationRequired)
+	descriptor.RequiresExplicitConnection = true
+	descriptor.InputSchema = json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":1,"maxLength":4}},"required":["id"],"additionalProperties":false}`)
+	handler := capability.Handler(func(_ context.Context, resolved *config.Resolved, resolver *secret.Resolver,
+		_ *redact.Redactor, _ json.RawMessage) (any, error) {
+		handlerCalls++
+		if _, err := resolver.Resolve(resolved.Credential, resolved.Secrets, "token"); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
+	})
+	registry := capability.NewRegistry()
+	if err := registry.Register("fake", capability.Operation{Descriptor: descriptor, Handler: handler}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.New()
+	cfg.Services["service"] = config.Service{Provider: "fake", BaseURL: "https://example.invalid"}
+	cfg.Credentials["sender"] = config.Credential{
+		Type: config.CredentialTypeEnv, Values: map[string]string{"token": "FAKE_TOKEN"},
+	}
+	cfg.Connections["alerts"] = config.Connection{Service: "service", Credential: "sender"}
+	cfg.Defaults.Connections["fake"] = "alerts"
+	resolver := secret.NewWith(func(string) string { secretReads++; return "test-token" }, nil, nil, nil)
+	core := New(registry, cfg, resolver, nil)
+	var audit bytes.Buffer
+	core.SetAudit(&audit)
+
+	tests := []struct {
+		name    string
+		request InvokeRequest
+		wantErr any
+	}{
+		{
+			name: "invalid schema",
+			request: InvokeRequest{Operation: descriptor.ID, Connection: "alerts", Confirmed: true,
+				Arguments: json.RawMessage(`{"id":"12345"}`)},
+			wantErr: new(InvalidRequestError),
+		},
+		{
+			name: "default is ignored",
+			request: InvokeRequest{Operation: descriptor.ID, Confirmed: true,
+				Arguments: json.RawMessage(`{"id":"1"}`)},
+			wantErr: new(ConnectionSelectionError),
+		},
+		{
+			name: "confirmation missing",
+			request: InvokeRequest{Operation: descriptor.ID, Connection: "alerts",
+				Arguments: json.RawMessage(`{"id":"1"}`)},
+			wantErr: new(ConfirmationRequiredError),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := core.Invoke(context.Background(), tt.request)
+			if !errorAs(err, tt.wantErr) {
+				t.Fatalf("Invoke() = %T %v, want %T", err, err, tt.wantErr)
+			}
+		})
+	}
+	core.SetPolicy(func(context.Context, InvokeRequest, capability.Descriptor, *config.Resolved) error {
+		return errors.New("private policy detail")
+	})
+	_, err := core.Invoke(context.Background(), InvokeRequest{
+		Operation: descriptor.ID, Connection: "alerts", Confirmed: true,
+		Arguments: json.RawMessage(`{"id":"1"}`),
+	})
+	if !errorAs(err, new(PolicyDeniedError)) {
+		t.Fatalf("Invoke(policy denied) = %T %v, want *PolicyDeniedError", err, err)
+	}
+	core.SetPolicy(nil)
+	if secretReads != 0 || handlerCalls != 0 || audit.Len() != 0 {
+		t.Fatalf("before confirmed explicit dispatch: secret reads=%d handler calls=%d audit=%q",
+			secretReads, handlerCalls, audit.String())
+	}
+
+	response, err := core.Invoke(context.Background(), InvokeRequest{
+		Operation: descriptor.ID, Connection: "alerts", Confirmed: true,
+		Arguments: json.RawMessage(`{"id":"1"}`),
+	})
+	if err != nil {
+		t.Fatalf("Invoke(confirmed) = %v", err)
+	}
+	if response.Connection != "alerts" || secretReads != 1 || handlerCalls != 1 {
+		t.Fatalf("response=%+v secret reads=%d handler calls=%d", response, secretReads, handlerCalls)
+	}
+	var event struct {
+		RequestID  string `json:"request_id"`
+		Operation  string `json:"operation"`
+		Connection string `json:"connection"`
+		Result     string `json:"result"`
+		Confirmed  bool   `json:"confirmed"`
+		Time       string `json:"time"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(audit.Bytes()), &event); err != nil {
+		t.Fatalf("audit = %q: %v", audit.String(), err)
+	}
+	if len(event.RequestID) != 32 || event.Operation != descriptor.ID || event.Connection != "alerts" ||
+		!event.Confirmed || event.Result != "success" || event.Time == "" {
+		t.Fatalf("audit event = %+v", event)
+	}
+	if strings.Contains(audit.String(), `"id":"1"`) || strings.Contains(audit.String(), "test-token") {
+		t.Fatalf("audit contains arguments or secret: %s", audit.String())
 	}
 }
 

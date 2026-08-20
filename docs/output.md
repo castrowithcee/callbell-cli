@@ -9,8 +9,9 @@ updated: 2026-08-20
 
 # Output contract
 
-Callbell CLI writes requested data to stdout and everything else to stderr. Output is deterministic: the
-same command over the same data produces byte-identical bytes.
+Callbell CLI writes requested data to stdout and everything else to stderr. Requested payload output is
+deterministic: the same command over the same data produces byte-identical stdout bytes. Mutation audit
+events contain a fresh request ID and timestamp on stderr.
 
 ## Streams and exit codes
 
@@ -121,10 +122,12 @@ The first line on stderr carries a provider-independent code:
 callbell: <code>: <message>
 ```
 
-A runtime error (exit `1`) is that line and nothing else. A usage error (exit `2`) is followed by the usage
-text of the command that reported the error, so stderr is longer than one line. For example, an error from
-`callbell knowledge pages list` shows that command's usage rather than the root command's usage. Read the
-first line and branch on the code rather than on the message text.
+A runtime error (exit `1`) is normally that line and nothing else. A usage error (exit `2`) is followed by
+the usage text of the command that reported the error, so stderr is longer than one line. For example, an
+error from `callbell knowledge pages list` shows that command's usage rather than the root command's usage.
+A confirmed mutation attempt additionally writes its minimal JSON audit event after the diagnostic and,
+for a usage error, after the usage text. The stable error-code line therefore remains the first stderr
+line. Read that line and branch on the code rather than on the message text.
 
 | Code | Meaning |
 | --- | --- |
@@ -132,7 +135,7 @@ first line and branch on the code rather than on the message text.
 | `invalid-request` | the JSON request or operation arguments are invalid |
 | `config-missing` | no configuration file at the resolved path |
 | `config-invalid` | the configuration file does not satisfy the schema, or a file beside it is not usable as it stands, for example a credential fallback others can read |
-| `connection-selection` | no connection given and no usable default |
+| `connection-selection` | no connection can be selected, or the operation requires an explicit connection in its invoke request |
 | `unknown-connection` | the named connection is not configured |
 | `connection-ambiguous` | several connections match and no unique operation or provider default resolves them |
 | `unknown-operation` | the requested operation ID or contract version is not registered |
@@ -143,6 +146,8 @@ first line and branch on the code rather than on the message text.
 | `unreachable` | the provider host did not answer |
 | `tls` | the TLS connection to the provider could not be established |
 | `auth` | the provider rejected the credential |
+| `permission` | the authenticated identity is not allowed to perform the operation |
+| `timeout` | the provider did not answer before the request deadline; a non-idempotent call is not retried |
 | `rate-limited` | the provider refused further requests for now |
 | `invalid-provider-response` | the normalized provider result does not satisfy the operation output schema |
 | `provider-error` | the provider answered with something unusable |

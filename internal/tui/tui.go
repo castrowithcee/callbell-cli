@@ -1580,11 +1580,14 @@ func (m *Model) testLine() string {
 			fmt.Sprintf("%s: ok - %s accepted the connection", m.testName, providerName))
 	case m.testClass != "":
 		explanation := map[provider.Class]string{
-			provider.ClassUnreachable:   "the server did not answer; check the base URL and network",
-			provider.ClassTLS:           "the secure connection failed; check the server certificate and URL",
-			provider.ClassAuth:          providerName + " rejected the credential or it lacks permission",
-			provider.ClassRateLimited:   providerName + " is rate-limiting requests; wait and try again",
-			provider.ClassProviderError: providerName + " returned an unusable response; check the root URL and API access",
+			provider.ClassUnreachable:     "the server did not answer; check the base URL and network",
+			provider.ClassTLS:             "the secure connection failed; check the server certificate and URL",
+			provider.ClassAuth:            providerName + " rejected the credential or it lacks permission",
+			provider.ClassPermission:      providerName + " accepted the credential but refused the operation",
+			provider.ClassTimeout:         providerName + " did not answer before the request deadline",
+			provider.ClassRateLimited:     providerName + " is rate-limiting requests; wait and try again",
+			provider.ClassInvalidResponse: providerName + " returned an invalid response",
+			provider.ClassProviderError:   providerName + " returned an unusable response; check the root URL and API access",
 		}[m.testClass]
 		if providerName == "BookStack" && m.testClass == provider.ClassAuth {
 			explanation = "BookStack rejected the token or its user lacks permission"

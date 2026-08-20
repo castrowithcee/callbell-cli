@@ -375,7 +375,7 @@ func TestSearchAndInvokeJSONCommands(t *testing.T) {
 	})
 }
 
-// The shipped registry must be wirable without error, even while no provider is registered yet.
+// The shipped registry must be wirable with every operation and provider metadata contract.
 func TestDefaultRegistry(t *testing.T) {
 	reg := defaultRegistry()
 	if reg == nil {
@@ -393,7 +393,10 @@ func TestDefaultRegistry(t *testing.T) {
 		len(telegram.SecretRoles) != 1 || telegram.SecretRoles[0].Name != "bot-token" {
 		t.Errorf("Telegram metadata = %+v, %v", telegram, ok)
 	}
-	if operations := reg.Provider("telegram"); len(operations) != 0 {
-		t.Errorf("Telegram operations = %v, want none before the send task", operations)
+	operations := reg.Provider("telegram")
+	if len(operations) != 1 || operations[0].ID != "telegram.messages.send" ||
+		!operations[0].RequiresExplicitConnection ||
+		operations[0].Risk.Confirmation != capability.ConfirmationRequired {
+		t.Errorf("Telegram operations = %v, want the explicit confirmed send operation", operations)
 	}
 }

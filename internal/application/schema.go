@@ -128,6 +128,12 @@ func validateAt(schema map[string]json.RawMessage, value any, path string) error
 				return fmt.Errorf("%s is shorter than %d characters", path, minimum)
 			}
 		}
+		if raw := schema["maxLength"]; len(raw) > 0 {
+			var maximum int
+			if json.Unmarshal(raw, &maximum) == nil && utf8.RuneCountInString(value) > maximum {
+				return fmt.Errorf("%s is longer than %d characters", path, maximum)
+			}
+		}
 	case json.Number:
 		if raw := schema["minimum"]; len(raw) > 0 {
 			minimum, _ := strconv.ParseFloat(string(raw), 64)

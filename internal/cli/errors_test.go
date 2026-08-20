@@ -13,6 +13,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
+	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
@@ -34,6 +35,9 @@ func TestCodeFor(t *testing.T) {
 		{"confirmation required", &application.ConfirmationRequiredError{Operation: "x"}, output.CodeConfirmationRequired},
 		{"policy denied", &application.PolicyDeniedError{Operation: "x"}, output.CodePolicyDenied},
 		{"invalid provider result", &application.InvalidProviderResponseError{Operation: "x"}, output.CodeInvalidProviderResult},
+		{"provider permission", &provider.Error{Class: provider.ClassPermission}, output.CodePermission},
+		{"provider timeout", &provider.Error{Class: provider.ClassTimeout}, output.CodeTimeout},
+		{"provider invalid response", &provider.Error{Class: provider.ClassInvalidResponse}, output.CodeInvalidProviderResult},
 		{"unsupported capability", &capability.UnsupportedError{Capability: "x"}, output.CodeUnsupportedCapability},
 		{"projection", &output.ProjectionError{Field: "x"}, output.CodeUsage},
 		{"plain usage error", &UsageError{errors.New("unknown flag")}, output.CodeUsage},

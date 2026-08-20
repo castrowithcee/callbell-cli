@@ -103,6 +103,7 @@ func run(cmd *cobra.Command, opts *Options, args []string, stdout, stderr io.Wri
 	if code == exitUsage {
 		fmt.Fprint(stderr, executed.UsageString())
 	}
+	writeAudit(stderr, auditFrom(err), opts.Redactor)
 	return code
 }
 

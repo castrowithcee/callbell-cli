@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/castrowithcee/callbell-cli/internal/application"
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
 // maxAgentRequestBytes bounds the complete stdin request before JSON decoding. One MiB leaves ample room
@@ -79,12 +81,57 @@ func newInvokeCommand(opts *Options, registry *capability.Registry) *cobra.Comma
 			if err != nil {
 				return err
 			}
+			var audit bytes.Buffer
+			core.SetAudit(&audit)
 			response, err := core.Invoke(c.Context(), request)
 			if err != nil {
-				return classifyUserError(err)
+				return withAudit(classifyUserError(err), audit.Bytes())
 			}
-			return writeEnvelope(c.OutOrStdout(), response)
+			if err := writeEnvelope(c.OutOrStdout(), response); err != nil {
+				return withAudit(err, audit.Bytes())
+			}
+			writeAudit(c.ErrOrStderr(), audit.Bytes(), opts.Redactor)
+			return nil
 		},
+	}
+}
+
+// auditedError carries a completed mutation audit event without changing the wrapped error's public
+// classification. The central runner prints the diagnostic and optional usage before it writes the event.
+type auditedError struct {
+	err   error
+	audit []byte
+}
+
+func (e *auditedError) Error() string { return e.err.Error() }
+func (e *auditedError) Unwrap() error { return e.err }
+
+func withAudit(err error, audit []byte) error {
+	if err == nil || len(bytes.TrimSpace(audit)) == 0 {
+		return err
+	}
+	return &auditedError{err: err, audit: append([]byte(nil), audit...)}
+}
+
+func auditFrom(err error) []byte {
+	var audited *auditedError
+	if errors.As(err, &audited) {
+		return audited.audit
+	}
+	return nil
+}
+
+func writeAudit(writer io.Writer, audit []byte, redactor *redact.Redactor) {
+	if len(audit) == 0 {
+		return
+	}
+	value := string(audit)
+	if redactor != nil {
+		value = redactor.Apply(value)
+	}
+	_, _ = io.WriteString(writer, value)
+	if !strings.HasSuffix(value, "\n") {
+		_, _ = io.WriteString(writer, "\n")
 	}
 }
 

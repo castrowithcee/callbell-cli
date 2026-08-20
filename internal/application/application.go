@@ -3,14 +3,20 @@ package application
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
+	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -24,6 +30,7 @@ type Core struct {
 	secrets  *secret.Resolver
 	redactor *redact.Redactor
 	policy   Policy
+	audit    io.Writer
 }
 
 // Policy may reject a fully validated request after connection selection and before confirmation,
@@ -37,6 +44,11 @@ func New(registry *capability.Registry, cfg *config.Config, secrets *secret.Reso
 
 // SetPolicy installs the policy used by subsequent invocations.
 func (c *Core) SetPolicy(policy Policy) { c.policy = policy }
+
+// SetAudit sends request-bound mutation audit events to writer. The CLI supplies a request-local buffer
+// that it flushes in stream-contract order; tests can use the same seam. Read operations and requests
+// rejected before confirmation do not produce an event.
+func (c *Core) SetAudit(writer io.Writer) { c.audit = writer }
 
 // SearchRequest filters the local operation catalog. Limit is capped even when omitted or non-positive.
 type SearchRequest struct {
@@ -180,7 +192,7 @@ type InvokeResponse struct {
 
 // Invoke validates arguments before route selection, then applies policy and confirmation before
 // dispatch. Provider output is normalized and validated before it can reach the caller.
-func (c *Core) Invoke(ctx context.Context, request InvokeRequest) (InvokeResponse, error) {
+func (c *Core) Invoke(ctx context.Context, request InvokeRequest) (response InvokeResponse, err error) {
 	descriptor, rawHandler, err := c.operation(request.Operation, request.Version)
 	if err != nil {
 		return InvokeResponse{}, err
@@ -209,6 +221,18 @@ func (c *Core) Invoke(ctx context.Context, request InvokeRequest) (InvokeRespons
 	if handler == nil {
 		return InvokeResponse{}, fmt.Errorf("operation %q has an invalid handler", descriptor.ID)
 	}
+	if descriptor.Risk.Confirmation == capability.ConfirmationRequired {
+		requestID, requestErr := newRequestID()
+		if requestErr != nil {
+			return InvokeResponse{}, fmt.Errorf("create audit request ID: %w", requestErr)
+		}
+		defer func() {
+			c.writeAudit(auditEvent{
+				RequestID: requestID, Operation: descriptor.ID, Connection: resolved.Name,
+				Confirmed: request.Confirmed, Result: auditResult(err), Time: time.Now().UTC(),
+			})
+		}()
+	}
 	value, err := handler(ctx, resolved, c.secrets, c.redactor, request.Arguments)
 	if err != nil {
 		return InvokeResponse{}, err
@@ -228,6 +252,47 @@ func (c *Core) Invoke(ctx context.Context, request InvokeRequest) (InvokeRespons
 	return InvokeResponse{
 		Operation: descriptor.ID, Version: descriptor.Version, Connection: resolved.Name, Result: result,
 	}, nil
+}
+
+type auditEvent struct {
+	RequestID  string    `json:"request_id"`
+	Operation  string    `json:"operation"`
+	Connection string    `json:"connection"`
+	Confirmed  bool      `json:"confirmed"`
+	Result     string    `json:"result"`
+	Time       time.Time `json:"time"`
+}
+
+func newRequestID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func auditResult(err error) string {
+	if err == nil {
+		return "success"
+	}
+	var providerErr *provider.Error
+	if errors.As(err, &providerErr) {
+		return string(providerErr.Class)
+	}
+	var invalid *InvalidProviderResponseError
+	if errors.As(err, &invalid) {
+		return string(provider.ClassInvalidResponse)
+	}
+	return "error"
+}
+
+func (c *Core) writeAudit(event auditEvent) {
+	if c.audit == nil {
+		return
+	}
+	// A failed stderr write must not turn a completed non-idempotent provider call into an apparent
+	// invocation failure that invites a retry.
+	_ = json.NewEncoder(c.audit).Encode(event)
 }
 
 func (c *Core) operation(id string, version int) (capability.Descriptor, capability.Handler, error) {
@@ -251,6 +316,9 @@ func (c *Core) selectConnection(explicit string, descriptor capability.Descripto
 			return nil, &capability.UnsupportedError{Connection: explicit, Capability: descriptor.ID}
 		}
 		return resolved, nil
+	}
+	if descriptor.RequiresExplicitConnection {
+		return nil, &ConnectionSelectionError{Operation: descriptor.ID, ExplicitRequired: true}
 	}
 
 	defaults := map[string]bool{}
