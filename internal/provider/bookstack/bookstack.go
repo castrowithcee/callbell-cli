@@ -57,10 +57,12 @@ var (
 	pagesList = capability.Descriptor{
 		ID:           Provider + ".pages.list",
 		Version:      1,
+		Title:        "List BookStack pages",
 		Description:  "List pages of a knowledge base",
+		Tags:         []string{"knowledge", "pages", "bookstack"},
 		Risk:         bookstackReadRisk,
 		Provider:     Provider,
-		InputSchema:  json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"additionalProperties":false}`),
+		InputSchema:  json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0}},"additionalProperties":false}`),
 		OutputSchema: json.RawMessage(`{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"slug":{"type":"string"},"book_id":{"type":"integer"},"chapter_id":{"type":"integer"},"created_at":{"type":"string"},"updated_at":{"type":"string"}},"required":["id","name","slug","book_id","chapter_id","created_at","updated_at"]}}`),
 		Arguments: []capability.Argument{
 			{Name: "limit", Description: "Maximum number of pages to return; 0 returns all"},
@@ -75,12 +77,18 @@ var (
 			{Name: "created_at", Description: "Creation timestamp"},
 			{Name: "updated_at", Description: "Last change timestamp"},
 		},
+		Examples: []capability.Example{{
+			Description: "List the first 25 pages",
+			Arguments:   json.RawMessage(`{"limit":25,"offset":0}`),
+		}},
 	}
 
 	pagesGet = capability.Descriptor{
 		ID:           Provider + ".pages.get",
 		Version:      1,
+		Title:        "Get a BookStack page",
 		Description:  "Read one page of a knowledge base",
+		Tags:         []string{"knowledge", "pages", "bookstack"},
 		Risk:         bookstackReadRisk,
 		Provider:     Provider,
 		InputSchema:  json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","minLength":1}},"required":["id"],"additionalProperties":false}`),
@@ -97,15 +105,50 @@ var (
 			{Name: "html", Description: "Rendered page content, untrusted data"},
 			{Name: "markdown", Description: "Markdown page content when the page uses the Markdown editor, untrusted data"},
 		},
+		Examples: []capability.Example{{
+			Description: "Read page 42",
+			Arguments:   json.RawMessage(`{"id":"42"}`),
+		}},
 	}
 )
 
 // Register records this provider's operations and their existing command handlers.
 func Register(reg *capability.Registry) error {
 	return reg.Register(Provider,
-		capability.Operation{Descriptor: pagesList, Handler: (*Client).ListPages},
-		capability.Operation{Descriptor: pagesGet, Handler: (*Client).GetPage},
+		capability.Operation{Descriptor: pagesList, Handler: capability.Handler(invokePagesList)},
+		capability.Operation{Descriptor: pagesGet, Handler: capability.Handler(invokePagesGet)},
 	)
+}
+
+func invokePagesList(ctx context.Context, resolved *config.Resolved, secrets *secret.Resolver,
+	red *redact.Redactor, raw json.RawMessage) (any, error) {
+	var arguments struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := json.Unmarshal(raw, &arguments); err != nil {
+		return nil, err
+	}
+	client, err := Open(resolved, secrets, red)
+	if err != nil {
+		return nil, err
+	}
+	return client.ListPages(ctx, arguments.Limit, arguments.Offset)
+}
+
+func invokePagesGet(ctx context.Context, resolved *config.Resolved, secrets *secret.Resolver,
+	red *redact.Redactor, raw json.RawMessage) (any, error) {
+	var arguments struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &arguments); err != nil {
+		return nil, err
+	}
+	client, err := Open(resolved, secrets, red)
+	if err != nil {
+		return nil, err
+	}
+	return client.GetPage(ctx, arguments.ID)
 }
 
 // Client talks to one BookStack instance with one credential.

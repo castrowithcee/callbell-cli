@@ -4,10 +4,15 @@
 package capability
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // Effect classifies what an operation does to the remote system.
@@ -42,45 +47,57 @@ const (
 // Risk is the complete safety contract of an operation. DataSensitivity is provider-owned because the
 // architecture defines no global classification taxonomy.
 type Risk struct {
-	Effect          Effect
-	Idempotency     Idempotency
-	Confirmation    Confirmation
-	OpenWorld       bool
-	DataSensitivity string
+	Effect          Effect       `json:"effect"`
+	Idempotency     Idempotency  `json:"idempotency"`
+	Confirmation    Confirmation `json:"confirmation"`
+	OpenWorld       bool         `json:"open_world"`
+	DataSensitivity string       `json:"data_sensitivity"`
 }
 
 // Argument is CLI discovery metadata for one named input. InputSchema is the operation contract.
 type Argument struct {
-	Name        string
-	Description string
-	Required    bool
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
 }
 
 // Field is CLI projection metadata for one named result value. OutputSchema is the operation contract.
 type Field struct {
-	Name        string
-	Description string
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// Example is a secret-free example invocation of an operation.
+type Example struct {
+	Description string          `json:"description,omitempty"`
+	Arguments   json.RawMessage `json:"arguments"`
 }
 
 // Descriptor is the versioned contract of one provider operation, for example bookstack.pages.list.
 // Schemas use JSON Schema's object form. Every configured connection of Provider shares the descriptor.
 type Descriptor struct {
-	ID           string
-	Version      int
-	Description  string
-	Risk         Risk
-	Provider     string
-	InputSchema  json.RawMessage
-	OutputSchema json.RawMessage
-	Arguments    []Argument
-	Fields       []Field
+	ID           string          `json:"id"`
+	Version      int             `json:"version"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	Tags         []string        `json:"tags"`
+	Risk         Risk            `json:"risk"`
+	Provider     string          `json:"provider"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	OutputSchema json.RawMessage `json:"output_schema"`
+	Arguments    []Argument      `json:"arguments"`
+	Fields       []Field         `json:"fields"`
+	Examples     []Example       `json:"examples"`
 }
 
-// Operation binds a descriptor to its provider handler. Handler stays opaque until an invocation surface
-// exists; the registry only owns and returns it.
+// Handler is the provider-independent dispatch seam used by the application core. Implementations open
+// exactly the selected connection and return a JSON-shaped value described by OutputSchema.
+type Handler func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor, json.RawMessage) (any, error)
+
+// Operation binds a descriptor to its provider-independent application handler.
 type Operation struct {
 	Descriptor Descriptor
-	Handler    any
+	Handler    Handler
 }
 
 // DuplicateError reports an operation ID and version that were already registered.
@@ -176,8 +193,17 @@ func (r *Registry) Provider(provider string) []Descriptor {
 	return sorted(r.byProvider[provider])
 }
 
+// All returns every registered descriptor, sorted by its globally unique ID.
+func (r *Registry) All() []Descriptor {
+	all := make(map[string]Descriptor, len(r.byID))
+	for id, operation := range r.byID {
+		all[id] = operation.Descriptor
+	}
+	return sorted(all)
+}
+
 // Lookup returns one registered descriptor and its handler.
-func (r *Registry) Lookup(id string) (Descriptor, any, bool) {
+func (r *Registry) Lookup(id string) (Descriptor, Handler, bool) {
 	operation, ok := r.byID[id]
 	if !ok {
 		return Descriptor{}, nil, false
@@ -190,12 +216,22 @@ func (d Descriptor) clone() Descriptor {
 	out := d
 	out.InputSchema = append(json.RawMessage(nil), d.InputSchema...)
 	out.OutputSchema = append(json.RawMessage(nil), d.OutputSchema...)
-	out.Arguments, out.Fields = nil, nil
+	out.Tags, out.Arguments, out.Fields, out.Examples = nil, nil, nil, nil
+	if len(d.Tags) > 0 {
+		out.Tags = append([]string(nil), d.Tags...)
+	}
 	if len(d.Arguments) > 0 {
 		out.Arguments = append([]Argument(nil), d.Arguments...)
 	}
 	if len(d.Fields) > 0 {
 		out.Fields = append([]Field(nil), d.Fields...)
+	}
+	if len(d.Examples) > 0 {
+		out.Examples = make([]Example, len(d.Examples))
+		for i, example := range d.Examples {
+			out.Examples[i] = example
+			out.Examples[i].Arguments = append(json.RawMessage(nil), example.Arguments...)
+		}
 	}
 	return out
 }
@@ -241,6 +277,11 @@ func (d Descriptor) validate(provider string) error {
 	}
 	if err := uniqueNames("field", len(d.Fields), func(i int) string { return d.Fields[i].Name }); err != nil {
 		return fmt.Errorf("operation %q: %w", d.ID, err)
+	}
+	for i, example := range d.Examples {
+		if err := validateSchemaValue(example.Arguments); err != nil {
+			return fmt.Errorf("operation %q: example %d arguments %w", d.ID, i+1, err)
+		}
 	}
 	return nil
 }
@@ -290,6 +331,17 @@ func validateSchema(kind, id string, schema json.RawMessage) error {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &object); err != nil || object == nil {
 		return fmt.Errorf("operation %q: %s schema must be a JSON object", id, kind)
+	}
+	return nil
+}
+
+func validateSchemaValue(value json.RawMessage) error {
+	if !json.Valid(value) {
+		return fmt.Errorf("must be valid JSON")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil || object == nil {
+		return fmt.Errorf("must be a JSON object")
 	}
 	return nil
 }

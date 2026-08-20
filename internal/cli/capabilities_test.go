@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/castrowithcee/callbell-cli/internal/capability"
+	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 // fakeRegistry registers two capabilities for the provider the test configuration uses. No provider
@@ -32,7 +37,9 @@ func fakeRegistry(t *testing.T) *capability.Registry {
 				Arguments:    []capability.Argument{{Name: "limit", Description: "Maximum number of pages"}},
 				Fields:       []capability.Field{{Name: "id"}, {Name: "name"}},
 			},
-			Handler: "list",
+			Handler: capability.Handler(func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor, json.RawMessage) (any, error) {
+				return []map[string]any{{"id": 1, "name": "Page"}}, nil
+			}),
 		},
 		capability.Operation{
 			Descriptor: capability.Descriptor{
@@ -51,7 +58,9 @@ func fakeRegistry(t *testing.T) *capability.Registry {
 				Arguments:    []capability.Argument{{Name: "id", Description: "Page identifier", Required: true}},
 				Fields:       []capability.Field{{Name: "html"}},
 			},
-			Handler: "get",
+			Handler: capability.Handler(func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor, json.RawMessage) (any, error) {
+				return map[string]any{"html": "<p>Page</p>"}, nil
+			}),
 		},
 	)
 	if err != nil {
@@ -65,6 +74,18 @@ func runDiscovery(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	opts := &Options{}
+	code := run(newRootCommand(opts, fakeRegistry(t)), opts, args, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
+}
+
+func runAgentDiscovery(t *testing.T, request string, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	redactor := &redact.Redactor{}
+	opts := &Options{
+		Input: strings.NewReader(request), Redactor: redactor,
+		Secrets: secret.NewWith(nil, nil, nil, redactor),
+	}
 	code := run(newRootCommand(opts, fakeRegistry(t)), opts, args, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
@@ -226,35 +247,36 @@ func TestDescribeCommand(t *testing.T) {
 	t.Setenv("CALLBELL_CLI_HOME", "")
 	cfg := writeConfig(t, validConfig)
 
-	t.Run("full contract", func(t *testing.T) {
-		code, stdout, stderr := runDiscovery(t, "describe", "bookstack.pages.get", "--config", cfg, "--agent")
+	t.Run("full JSON contract from stdin", func(t *testing.T) {
+		code, stdout, stderr := runAgentDiscovery(t,
+			`{"operation":"bookstack.pages.get","version":1}`, "describe", "--config", cfg)
 
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
 		}
-		want := "name=bookstack.pages.get\n" +
-			"risk=read\n" +
-			"description=Read one page\n" +
-			"arguments=id!\n" +
-			"fields=html\n"
-		if stdout != want {
-			t.Errorf("stdout = %q, want %q", stdout, want)
+		var envelope struct {
+			Data struct {
+				Operation   capability.Descriptor `json:"operation"`
+				Connections []string              `json:"connections"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("stdout is not JSON: %v", err)
+		}
+		if envelope.Data.Operation.ID != "bookstack.pages.get" || envelope.Data.Operation.Version != 1 {
+			t.Errorf("operation = %+v", envelope.Data.Operation)
+		}
+		if len(envelope.Data.Operation.InputSchema) == 0 || len(envelope.Data.Operation.OutputSchema) == 0 {
+			t.Errorf("schemas missing: %+v", envelope.Data.Operation)
+		}
+		if !reflect.DeepEqual(envelope.Data.Connections, []string{"wiki"}) {
+			t.Errorf("connections = %v", envelope.Data.Connections)
 		}
 	})
 
-	t.Run("short contract", func(t *testing.T) {
-		code, stdout, _ := runDiscovery(t, "describe", "--short", "bookstack.pages.get", "--config", cfg, "--agent")
-
-		if code != exitOK {
-			t.Fatalf("exit code = %d, want %d", code, exitOK)
-		}
-		if want := "summary=read bookstack.pages.get(id)\n"; stdout != want {
-			t.Errorf("stdout = %q, want %q", stdout, want)
-		}
-	})
-
-	t.Run("capability nobody offers is a usage error", func(t *testing.T) {
-		code, stdout, stderr := runDiscovery(t, "describe", "absent.capability", "--config", cfg)
+	t.Run("unknown operation is stable", func(t *testing.T) {
+		code, stdout, stderr := runAgentDiscovery(t,
+			`{"operation":"absent.capability"}`, "describe", "--config", cfg)
 
 		if code != exitUsage {
 			t.Errorf("exit code = %d, want %d", code, exitUsage)
@@ -262,27 +284,81 @@ func TestDescribeCommand(t *testing.T) {
 		if stdout != "" {
 			t.Errorf("stdout = %q, want empty", stdout)
 		}
-		if !strings.Contains(stderr, "no configured connection offers") {
+		if !strings.HasPrefix(stderr, "callbell: unknown-operation:") {
 			t.Errorf("stderr = %q", stderr)
 		}
 	})
 
 	t.Run("unknown connection is a different error", func(t *testing.T) {
-		_, _, stderr := runDiscovery(t, "describe", "bookstack.pages.get", "--connection", "absent", "--config", cfg)
+		_, _, stderr := runAgentDiscovery(t,
+			`{"operation":"bookstack.pages.get","connection":"absent"}`, "describe", "--config", cfg)
 
 		if !strings.Contains(stderr, `unknown connection "absent"`) {
 			t.Errorf("stderr = %q, want the unknown-connection error", stderr)
 		}
 	})
 
-	t.Run("missing argument is a usage error", func(t *testing.T) {
-		code, stdout, _ := runDiscovery(t, "describe", "--config", cfg)
+	t.Run("empty stdin is a usage error", func(t *testing.T) {
+		code, stdout, stderr := runAgentDiscovery(t, "", "describe", "--config", cfg)
 
 		if code != exitUsage {
 			t.Errorf("exit code = %d, want %d", code, exitUsage)
 		}
 		if stdout != "" {
 			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if !strings.HasPrefix(stderr, "callbell: invalid-request:") {
+			t.Errorf("stderr = %q", stderr)
+		}
+	})
+}
+
+func TestSearchAndInvokeJSONCommands(t *testing.T) {
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, validConfig)
+
+	t.Run("search reads one request and writes one envelope", func(t *testing.T) {
+		code, stdout, stderr := runAgentDiscovery(t,
+			`{"query":"pages","effect":"read"}`, "search", "--config", cfg)
+		if code != exitOK || stderr != "" {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		var envelope struct {
+			Data struct {
+				Operations []map[string]any `json:"operations"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil || len(envelope.Data.Operations) != 2 {
+			t.Fatalf("stdout = %q (%v)", stdout, err)
+		}
+	})
+
+	t.Run("invoke dispatches a known schema directly", func(t *testing.T) {
+		request := `{"operation":"bookstack.pages.get","arguments":{"id":"7"}}`
+		code, stdout, stderr := runAgentDiscovery(t, request, "invoke", "--config", cfg)
+		if code != exitOK || stderr != "" {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		var envelope struct {
+			Data struct {
+				Operation  string         `json:"operation"`
+				Connection string         `json:"connection"`
+				Result     map[string]any `json:"result"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("stdout is not JSON: %v", err)
+		}
+		if envelope.Data.Operation != "bookstack.pages.get" || envelope.Data.Connection != "wiki" {
+			t.Errorf("data = %+v", envelope.Data)
+		}
+	})
+
+	t.Run("a second JSON request is rejected without stdout", func(t *testing.T) {
+		code, stdout, stderr := runAgentDiscovery(t, "{}\n{}", "search", "--config", cfg)
+		if code != exitUsage || stdout != "" || !strings.HasPrefix(stderr, "callbell: invalid-request:") {
+			t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 		}
 	})
 }

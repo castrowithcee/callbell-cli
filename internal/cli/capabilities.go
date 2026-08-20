@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -72,57 +71,6 @@ func newCapabilitiesCommand(opts *Options, reg *capability.Registry) *cobra.Comm
 			})
 		},
 	}
-}
-
-func newDescribeCommand(opts *Options, reg *capability.Registry) *cobra.Command {
-	var short bool
-
-	cmd := &cobra.Command{
-		Use:   "describe <capability>",
-		Short: "Show the contract of one capability",
-		Args:  exactlyOneArg,
-		RunE: func(c *cobra.Command, args []string) error {
-			cat, err := catalog(opts, reg)
-			if err != nil {
-				return err
-			}
-			cap, err := cat.Describe(opts.Connection, args[0])
-			if err != nil {
-				return classifyUserError(err)
-			}
-			if short {
-				return emit(c, opts, output.Object{
-					Fields: []output.Field{{Name: "summary", Value: cap.Summary()}},
-				})
-			}
-			return emit(c, opts, contractObject(cap))
-		},
-	}
-	cmd.Flags().BoolVar(&short, "short", false, "print the one-line summary instead of the full contract")
-
-	return cmd
-}
-
-// contractObject flattens a capability contract into scalar fields. Required arguments carry a trailing
-// "!" so the machine formats stay one flat record.
-//
-// callbell-dev: argument and field prose lives in the documentation; add nested values only when a
-// provider result actually needs them.
-func contractObject(d capability.Descriptor) output.Object {
-	arguments := make([]string, len(d.Arguments))
-	for i, a := range d.Arguments {
-		arguments[i] = a.Name
-		if a.Required {
-			arguments[i] += "!"
-		}
-	}
-	return output.Object{Fields: []output.Field{
-		{Name: "name", Value: d.ID},
-		{Name: "risk", Value: string(d.Risk.Effect)},
-		{Name: "description", Value: d.Description},
-		{Name: "arguments", Value: strings.Join(arguments, ",")},
-		{Name: "fields", Value: strings.Join(capabilityFieldNames(d), ",")},
-	}}
 }
 
 // validateCapabilityFields checks a projection against the declared contract before a provider is called.

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 
+	"github.com/castrowithcee/callbell-cli/internal/application"
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
@@ -14,13 +15,20 @@ import (
 // the message.
 func codeFor(err error) output.Code {
 	var (
-		notFound    *config.NotFoundError
-		invalid     *config.InvalidError
-		selection   *config.SelectionError
-		unknownConn *capability.UnknownConnectionError
-		unsupported *capability.UnsupportedError
-		projection  *output.ProjectionError
-		usage       *UsageError
+		notFound      *config.NotFoundError
+		invalid       *config.InvalidError
+		selection     *config.SelectionError
+		unknownConn   *capability.UnknownConnectionError
+		unsupported   *capability.UnsupportedError
+		projection    *output.ProjectionError
+		usage         *UsageError
+		invalidReq    *application.InvalidRequestError
+		unknownOp     *application.UnknownOperationError
+		ambiguous     *application.ConnectionAmbiguousError
+		appSelection  *application.ConnectionSelectionError
+		confirmation  *application.ConfirmationRequiredError
+		denied        *application.PolicyDeniedError
+		invalidResult *application.InvalidProviderResponseError
 
 		missingSecret *secret.MissingSecretError
 		permission    *secret.PermissionError
@@ -39,8 +47,22 @@ func codeFor(err error) output.Code {
 		return output.CodeConnectionSelection
 	case errors.As(err, &unknownConn):
 		return output.CodeUnknownConnection
+	case errors.As(err, &ambiguous):
+		return output.CodeConnectionAmbiguous
+	case errors.As(err, &appSelection):
+		return output.CodeConnectionSelection
+	case errors.As(err, &unknownOp):
+		return output.CodeUnknownOperation
 	case errors.As(err, &unsupported):
 		return output.CodeUnsupportedCapability
+	case errors.As(err, &invalidReq):
+		return output.CodeInvalidRequest
+	case errors.As(err, &confirmation):
+		return output.CodeConfirmationRequired
+	case errors.As(err, &denied):
+		return output.CodePolicyDenied
+	case errors.As(err, &invalidResult):
+		return output.CodeInvalidProviderResult
 	case errors.As(err, &permission):
 		// A credential file others can read is one state with one fix, whichever operation ran into it.
 		// It is named before the missing secret it causes, so reading, writing, and deleting all report
@@ -80,12 +102,18 @@ func classifyUserError(err error) error {
 		return nil
 	}
 	var (
-		notFound    *config.NotFoundError
-		invalid     *config.InvalidError
-		selection   *config.SelectionError
-		unknownConn *capability.UnknownConnectionError
-		unsupported *capability.UnsupportedError
-		projection  *output.ProjectionError
+		notFound     *config.NotFoundError
+		invalid      *config.InvalidError
+		selection    *config.SelectionError
+		unknownConn  *capability.UnknownConnectionError
+		unsupported  *capability.UnsupportedError
+		projection   *output.ProjectionError
+		invalidReq   *application.InvalidRequestError
+		unknownOp    *application.UnknownOperationError
+		ambiguous    *application.ConnectionAmbiguousError
+		appSelection *application.ConnectionSelectionError
+		confirmation *application.ConfirmationRequiredError
+		denied       *application.PolicyDeniedError
 
 		missingSecret *secret.MissingSecretError
 		permission    *secret.PermissionError
@@ -93,7 +121,9 @@ func classifyUserError(err error) error {
 	switch {
 	case errors.As(err, &notFound), errors.As(err, &invalid), errors.As(err, &selection),
 		errors.As(err, &unknownConn), errors.As(err, &unsupported), errors.As(err, &projection),
-		errors.As(err, &missingSecret), errors.As(err, &permission):
+		errors.As(err, &missingSecret), errors.As(err, &permission), errors.As(err, &invalidReq),
+		errors.As(err, &unknownOp), errors.As(err, &ambiguous), errors.As(err, &confirmation),
+		errors.As(err, &appSelection), errors.As(err, &denied):
 		return &UsageError{err}
 	}
 	return err

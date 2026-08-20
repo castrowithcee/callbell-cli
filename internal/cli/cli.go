@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -36,6 +37,7 @@ type Options struct {
 	Output     string
 	Fields     []string
 	Limit      int
+	Input      io.Reader
 
 	// Format is resolved from Output and Agent before a command runs.
 	Format output.Format
@@ -78,7 +80,7 @@ func (e *UsageError) Unwrap() error { return e.Err }
 // Run executes the root command against the given streams and returns the process exit code. It never
 // terminates the process, so callers and tests share the same path.
 func Run(args []string, stdout, stderr io.Writer) int {
-	opts := &Options{Redactor: &redact.Redactor{}}
+	opts := &Options{Redactor: &redact.Redactor{}, Input: os.Stdin}
 	return run(newRootCommand(opts, defaultRegistry()), opts, args, stdout, stderr)
 }
 
@@ -86,6 +88,9 @@ func run(cmd *cobra.Command, opts *Options, args []string, stdout, stderr io.Wri
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
+	if opts.Input != nil {
+		cmd.SetIn(opts.Input)
+	}
 
 	executed, err := cmd.ExecuteC()
 	if err == nil {
@@ -153,7 +158,9 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		newConfigCommand(opts),
 		newCredentialCommand(opts),
 		newCapabilitiesCommand(opts, reg),
+		newSearchCommand(opts, reg),
 		newDescribeCommand(opts, reg),
+		newInvokeCommand(opts, reg),
 		newKnowledgeCommand(opts, reg),
 		newTUICommand(opts),
 	)

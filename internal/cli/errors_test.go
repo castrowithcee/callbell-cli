@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/castrowithcee/callbell-cli/internal/application"
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/output"
@@ -26,6 +27,13 @@ func TestCodeFor(t *testing.T) {
 		{"no connection selected", &config.SelectionError{Domain: "knowledge"}, output.CodeConnectionSelection},
 		{"named connection missing", &config.SelectionError{Domain: "knowledge", Name: "absent"}, output.CodeUnknownConnection},
 		{"unknown connection", &capability.UnknownConnectionError{Name: "absent"}, output.CodeUnknownConnection},
+		{"invalid agent request", &application.InvalidRequestError{Message: "schema"}, output.CodeInvalidRequest},
+		{"unknown operation", &application.UnknownOperationError{Operation: "x"}, output.CodeUnknownOperation},
+		{"ambiguous connection", &application.ConnectionAmbiguousError{Operation: "x"}, output.CodeConnectionAmbiguous},
+		{"no matching connection", &application.ConnectionSelectionError{Operation: "x"}, output.CodeConnectionSelection},
+		{"confirmation required", &application.ConfirmationRequiredError{Operation: "x"}, output.CodeConfirmationRequired},
+		{"policy denied", &application.PolicyDeniedError{Operation: "x"}, output.CodePolicyDenied},
+		{"invalid provider result", &application.InvalidProviderResponseError{Operation: "x"}, output.CodeInvalidProviderResult},
 		{"unsupported capability", &capability.UnsupportedError{Capability: "x"}, output.CodeUnsupportedCapability},
 		{"projection", &output.ProjectionError{Field: "x"}, output.CodeUsage},
 		{"plain usage error", &UsageError{errors.New("unknown flag")}, output.CodeUsage},

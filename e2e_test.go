@@ -40,9 +40,14 @@ type runner struct {
 }
 
 func (c *runner) run(t *testing.T, args ...string) (int, string, string) {
+	return c.runInput(t, "", args...)
+}
+
+func (c *runner) runInput(t *testing.T, input string, args ...string) (int, string, string) {
 	t.Helper()
 	cmd := exec.Command(c.bin, args...)
 	cmd.Env = c.env
+	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -221,15 +226,39 @@ defaults:
 	})
 
 	t.Run("a capability describes itself", func(t *testing.T) {
-		code, stdout, _ := c.run(t, "describe", "bookstack.pages.list", "--agent")
+		code, stdout, _ := c.runInput(t, `{"operation":"bookstack.pages.list"}`, "describe")
 
 		if code != 0 {
 			t.Fatalf("exit %d", code)
 		}
-		for _, want := range []string{"name=bookstack.pages.list", "risk=read", "fields=id,name,slug"} {
+		for _, want := range []string{`"id":"bookstack.pages.list"`, `"effect":"read"`, `"connections":["archive","primary"]`} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 			}
+		}
+	})
+
+	t.Run("invoke dispatches a known operation directly", func(t *testing.T) {
+		request := `{"operation":"bookstack.pages.get","connection":"primary","arguments":{"id":"1"}}`
+		code, stdout, stderr := c.runInput(t, request, "invoke")
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		var envelope struct {
+			Data struct {
+				Operation  string         `json:"operation"`
+				Connection string         `json:"connection"`
+				Result     map[string]any `json:"result"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+			t.Fatalf("stdout is not JSON: %v", err)
+		}
+		if envelope.Data.Operation != "bookstack.pages.get" || envelope.Data.Connection != "primary" {
+			t.Errorf("data = %+v", envelope.Data)
+		}
+		if envelope.Data.Result["name"] != "Primary Runbook" {
+			t.Errorf("result = %+v", envelope.Data.Result)
 		}
 	})
 
@@ -320,22 +349,23 @@ defaults:
 		tests := []struct {
 			name  string
 			args  []string
+			input string
 			code  int
 			in    string
 			usage string
 		}{
-			{"unknown flag", []string{"--nope"}, 2, "usage", "callbell [flags]"},
-			{"unknown command", []string{"frobnicate"}, 2, "usage", "callbell [flags]"},
-			{"unknown connection", []string{"knowledge", "pages", "list", "--connection", "absent"}, 2, "unknown-connection", "callbell knowledge pages list [flags]"},
-			{"empty configuration file", []string{"capabilities", "--config", "/dev/null"}, 2, "config-invalid", "callbell capabilities [flags]"},
-			{"unknown capability", []string{"describe", "absent.capability"}, 2, "unsupported-capability", "callbell describe <capability> [flags]"},
-			{"unknown field", []string{"knowledge", "pages", "list", "--fields", "absent"}, 2, "usage", "callbell knowledge pages list [flags]"},
-			{"missing page", []string{"knowledge", "pages", "get", "99"}, 1, "provider-error", ""},
+			{"unknown flag", []string{"--nope"}, "", 2, "usage", "callbell [flags]"},
+			{"unknown command", []string{"frobnicate"}, "", 2, "usage", "callbell [flags]"},
+			{"unknown connection", []string{"knowledge", "pages", "list", "--connection", "absent"}, "", 2, "unknown-connection", "callbell knowledge pages list [flags]"},
+			{"empty configuration file", []string{"capabilities", "--config", "/dev/null"}, "", 2, "config-invalid", "callbell capabilities [flags]"},
+			{"unknown operation", []string{"describe"}, `{"operation":"absent.capability"}`, 2, "unknown-operation", "callbell describe [flags]"},
+			{"unknown field", []string{"knowledge", "pages", "list", "--fields", "absent"}, "", 2, "usage", "callbell knowledge pages list [flags]"},
+			{"missing page", []string{"knowledge", "pages", "get", "99"}, "", 1, "provider-error", ""},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				code, stdout, stderr := c.run(t, tt.args...)
+				code, stdout, stderr := c.runInput(t, tt.input, tt.args...)
 
 				if code != tt.code {
 					t.Errorf("exit %d, want %d (stderr %q)", code, tt.code, stderr)
@@ -513,7 +543,6 @@ defaults:
 				{"config", "validate"},
 				{"capabilities"},
 				{"capabilities", "--agent"},
-				{"describe", "bookstack.pages.list"},
 				{"knowledge", "pages", "list"},
 				{"knowledge", "pages", "list", "--agent"},
 				{"knowledge", "pages", "list", "--output", "json"},

@@ -135,16 +135,22 @@ type Code string
 // The error codes this build can emit. Providers add their transport classes on top.
 const (
 	CodeUsage                 Code = "usage"
+	CodeInvalidRequest        Code = "invalid-request"
 	CodeConfigMissing         Code = "config-missing"
 	CodeConfigInvalid         Code = "config-invalid"
 	CodeConnectionSelection   Code = "connection-selection"
 	CodeUnknownConnection     Code = "unknown-connection"
+	CodeConnectionAmbiguous   Code = "connection-ambiguous"
+	CodeUnknownOperation      Code = "unknown-operation"
 	CodeUnsupportedCapability Code = "unsupported-capability"
 	CodeMissingSecret         Code = "missing-secret"
+	CodeConfirmationRequired  Code = "confirmation-required"
+	CodePolicyDenied          Code = "policy-denied"
 	CodeUnreachable           Code = "unreachable"
 	CodeTLS                   Code = "tls"
 	CodeAuth                  Code = "auth"
 	CodeRateLimited           Code = "rate-limited"
+	CodeInvalidProviderResult Code = "invalid-provider-response"
 	CodeProviderError         Code = "provider-error"
 	CodeRuntime               Code = "runtime"
 )
@@ -152,9 +158,10 @@ const (
 // AllCodes lists every error code this build can emit, in the order the documentation shows them.
 func AllCodes() []Code {
 	return []Code{
-		CodeUsage, CodeConfigMissing, CodeConfigInvalid, CodeConnectionSelection,
-		CodeUnknownConnection, CodeUnsupportedCapability, CodeMissingSecret,
-		CodeUnreachable, CodeTLS, CodeAuth, CodeRateLimited, CodeProviderError, CodeRuntime,
+		CodeUsage, CodeInvalidRequest, CodeConfigMissing, CodeConfigInvalid, CodeConnectionSelection,
+		CodeUnknownConnection, CodeConnectionAmbiguous, CodeUnknownOperation, CodeUnsupportedCapability,
+		CodeMissingSecret, CodeConfirmationRequired, CodePolicyDenied, CodeUnreachable, CodeTLS, CodeAuth,
+		CodeRateLimited, CodeInvalidProviderResult, CodeProviderError, CodeRuntime,
 	}
 }
 

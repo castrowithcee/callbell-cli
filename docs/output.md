@@ -4,7 +4,7 @@ description: >
 type: knowledge
 edit: shared
 created: 2026-08-14
-updated: 2026-08-19
+updated: 2026-08-20
 ---
 
 # Output contract
@@ -25,6 +25,13 @@ same command over the same data produces byte-identical bytes.
 | `2` | usage or validation error |
 | `1` | runtime error |
 
+## Agent commands
+
+`callbell search`, `callbell describe`, and `callbell invoke` each read exactly one JSON object from stdin.
+A request is limited to 1 MiB, including surrounding whitespace.
+A successful call writes one stable `{"data": ...}` JSON envelope to stdout. Diagnostics and errors remain
+on stderr, and failures write no stdout payload.
+
 ## Formats
 
 `--output table` (default), `--output json`, or `--output compact`.
@@ -42,8 +49,8 @@ inside a value are shown escaped so a record stays on one line.
 
 ```
 NAME                  RISK  DESCRIPTION
-knowledge.pages.get   read  Read one page
-knowledge.pages.list  read  List pages
+bookstack.pages.get   read  Read one page
+bookstack.pages.list  read  List pages
 ```
 
 For an object, each line is a field name and its value. Null and empty values are omitted.
@@ -54,7 +61,7 @@ Lossless and typed. Numbers stay numbers, booleans stay booleans, and a value a 
 explicit `null`. Objects keep every field, including null and empty ones.
 
 ```json
-[{"name":"knowledge.pages.get","risk":"read","description":"Read one page"}]
+[{"name":"bookstack.pages.get","risk":"read","description":"Read one page"}]
 ```
 
 ### compact
@@ -65,8 +72,8 @@ A **collection** is a header line followed by one line per record, fields separa
 
 ```
 name|risk|description
-knowledge.pages.get|read|Read one page
-knowledge.pages.list|read|List pages
+bookstack.pages.get|read|Read one page
+bookstack.pages.list|read|List pages
 ```
 
 A missing or empty value keeps its column as an empty field, so every line has the same number of fields.
@@ -74,7 +81,7 @@ A missing or empty value keeps its column as an empty field, so every line has t
 An **object** is one `key=value` per line. Null and empty values are omitted:
 
 ```
-name=knowledge.pages.get
+name=bookstack.pages.get
 risk=read
 description=Read one page
 ```
@@ -122,16 +129,22 @@ first line and branch on the code rather than on the message text.
 | Code | Meaning |
 | --- | --- |
 | `usage` | wrong invocation, unknown flag, unknown field |
+| `invalid-request` | the JSON request or operation arguments are invalid |
 | `config-missing` | no configuration file at the resolved path |
 | `config-invalid` | the configuration file does not satisfy the schema, or a file beside it is not usable as it stands, for example a credential fallback others can read |
 | `connection-selection` | no connection given and no usable default |
 | `unknown-connection` | the named connection is not configured |
+| `connection-ambiguous` | several connections match and no unique operation or provider default resolves them |
+| `unknown-operation` | the requested operation ID or contract version is not registered |
 | `unsupported-capability` | the capability is not offered |
 | `missing-secret` | a credential yields no secret: the message names the configuration key to fix |
+| `confirmation-required` | the operation requires confirmation in this exact invoke request |
+| `policy-denied` | local policy rejected the invocation |
 | `unreachable` | the provider host did not answer |
 | `tls` | the TLS connection to the provider could not be established |
 | `auth` | the provider rejected the credential |
 | `rate-limited` | the provider refused further requests for now |
+| `invalid-provider-response` | the normalized provider result does not satisfy the operation output schema |
 | `provider-error` | the provider answered with something unusable |
 | `runtime` | anything else that failed while running |
 

@@ -1,11 +1,16 @@
 package capability
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/redact"
+	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
 
 var (
@@ -52,7 +57,11 @@ var (
 	}
 )
 
-func operation(d Descriptor) Operation { return Operation{Descriptor: d, Handler: d.ID} }
+func operation(d Descriptor) Operation { return Operation{Descriptor: d, Handler: noopHandler} }
+
+func noopHandler(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor, json.RawMessage) (any, error) {
+	return nil, nil
+}
 
 func mustRegistry(t *testing.T) *Registry {
 	t.Helper()
@@ -216,13 +225,15 @@ func TestRegisterRejectsDuplicateIDsAndVersionConflicts(t *testing.T) {
 
 func TestRegistryOwnsDescriptorsAndHandlers(t *testing.T) {
 	t.Run("lookup returns the registered handler", func(t *testing.T) {
-		handler := new(int)
+		handler := Handler(func(context.Context, *config.Resolved, *secret.Resolver, *redact.Redactor, json.RawMessage) (any, error) {
+			return "handled", nil
+		})
 		reg := NewRegistry()
 		if err := reg.Register("fakewiki", Operation{Descriptor: pagesList, Handler: handler}); err != nil {
 			t.Fatalf("Register() = %v", err)
 		}
 		descriptor, got, ok := reg.Lookup(pagesList.ID)
-		if !ok || descriptor.ID != pagesList.ID || got != handler {
+		if !ok || descriptor.ID != pagesList.ID || reflect.ValueOf(got).Pointer() != reflect.ValueOf(handler).Pointer() {
 			t.Errorf("Lookup() = (%+v, %v, %v)", descriptor, got, ok)
 		}
 	})
