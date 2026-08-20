@@ -128,8 +128,9 @@ func (c *Client) Update(ctx context.Context) (Result, error) {
 type release struct {
 	TagName string `json:"tag_name"`
 	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
+		Name       string `json:"name"`
+		APIURL     string `json:"url"`
+		BrowserURL string `json:"browser_download_url"`
 	} `json:"assets"`
 }
 
@@ -166,7 +167,7 @@ func (c *Client) latest(ctx context.Context) (release, error) {
 	if base == "" {
 		base = repositoryAPI
 	}
-	body, err := c.request(ctx, base+"/releases/latest", maxMetadataBytes)
+	body, err := c.request(ctx, base+"/releases/latest", maxMetadataBytes, "application/vnd.github+json")
 	if err != nil {
 		return release{}, fmt.Errorf("check latest release: %w", err)
 	}
@@ -184,15 +185,15 @@ func (c *Client) download(ctx context.Context, rawURL string, limit int64) ([]by
 	if err := c.validateAssetURL(rawURL); err != nil {
 		return nil, err
 	}
-	return c.request(ctx, rawURL, limit)
+	return c.request(ctx, rawURL, limit, "application/octet-stream")
 }
 
-func (c *Client) request(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+func (c *Client) request(ctx context.Context, rawURL string, limit int64, accept string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "callbell/"+c.Version)
 	if token := c.token(); token != "" {
@@ -281,11 +282,15 @@ func assetName(version, goos, goarch string) string {
 func releaseURLs(r release, archiveName string) (string, string, error) {
 	var archiveURL, checksumURL string
 	for _, asset := range r.Assets {
+		assetURL := asset.APIURL
+		if assetURL == "" {
+			assetURL = asset.BrowserURL
+		}
 		switch asset.Name {
 		case archiveName:
-			archiveURL = asset.URL
+			archiveURL = assetURL
 		case "checksums.txt":
-			checksumURL = asset.URL
+			checksumURL = assetURL
 		}
 	}
 	if archiveURL == "" || checksumURL == "" {

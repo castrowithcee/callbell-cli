@@ -201,8 +201,8 @@ func releaseServer(t *testing.T, version string, archive []byte, checksumOverrid
 			assets := []map[string]string{}
 			if archive != nil {
 				assets = append(assets,
-					map[string]string{"name": asset, "browser_download_url": server.URL + "/asset"},
-					map[string]string{"name": "checksums.txt", "browser_download_url": server.URL + "/checksums"},
+					map[string]string{"name": asset, "url": server.URL + "/asset", "browser_download_url": server.URL + "/wrong"},
+					map[string]string{"name": "checksums.txt", "url": server.URL + "/checksums", "browser_download_url": server.URL + "/wrong"},
 				)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": version, "assets": assets})
