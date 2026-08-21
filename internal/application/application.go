@@ -83,33 +83,78 @@ func (c *Core) Search(request SearchRequest) (SearchResponse, error) {
 	if limit <= 0 || limit > maxSearchResults {
 		limit = maxSearchResults
 	}
-	return c.catalog(request, limit)
+	descriptors, err := c.catalog(request, limit)
+	if err != nil {
+		return SearchResponse{}, err
+	}
+	hits := make([]SearchHit, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		title := descriptor.Title
+		if title == "" {
+			title = descriptor.Description
+		}
+		hits = append(hits, SearchHit{
+			ID: descriptor.ID, Version: descriptor.Version, Title: title,
+			Description: descriptor.Description, Tags: nonNilStrings(descriptor.Tags),
+			Provider: descriptor.Provider, Effect: descriptor.Risk.Effect,
+			Connections: c.connectionNames(descriptor.Provider),
+		})
+	}
+	return SearchResponse{Operations: hits}, nil
 }
 
-// Tools returns the same discovery view as Search over the complete local catalog. The CLI catalog view
-// answers what this installation offers, so a truncated answer would read as a complete one; the bounded
-// Search response stays the contract of the request-bound agent surface.
-func (c *Core) Tools(request SearchRequest) (SearchResponse, error) {
-	return c.catalog(request, 0)
+// ToolSummary is the compact index entry of one tool: its ID and how many configured connections can run
+// it. A tool without a configured connection stays in the index with zero, so it is visible as
+// unconfigured rather than silently missing.
+type ToolSummary struct {
+	ID          string `json:"id"`
+	Connections int    `json:"connections"`
 }
 
-// catalog filters the registry deterministically. A limit of zero or less returns every match.
-func (c *Core) catalog(request SearchRequest, limit int) (SearchResponse, error) {
+// ToolsResponse is the payload inside the CLI envelope.
+type ToolsResponse struct {
+	Tools []ToolSummary `json:"tools"`
+}
+
+// Tools is the discovery index over the complete local catalog. It applies the same filters as Search to
+// the same descriptors but publishes only what picking a tool needs: everything else about a tool is one
+// describe away, and repeating it per entry would spend a reader's attention on text nobody asked for.
+//
+// The catalog view answers what this installation offers, so a truncated answer would read as a complete
+// one; the bounded Search response stays the contract of the request-bound agent surface.
+func (c *Core) Tools(request SearchRequest) (ToolsResponse, error) {
+	descriptors, err := c.catalog(request, 0)
+	if err != nil {
+		return ToolsResponse{}, err
+	}
+	tools := make([]ToolSummary, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		tools = append(tools, ToolSummary{
+			ID: descriptor.ID, Connections: len(c.connectionNames(descriptor.Provider)),
+		})
+	}
+	return ToolsResponse{Tools: tools}, nil
+}
+
+// catalog filters the registry deterministically and returns the matching descriptors in registry order.
+// Both discovery views project this one result, so the compact index and the bounded search answer cannot
+// disagree about which tools exist. A limit of zero or less returns every match.
+func (c *Core) catalog(request SearchRequest, limit int) ([]capability.Descriptor, error) {
 	if request.Effect != "" && !validEffect(request.Effect) {
-		return SearchResponse{}, &InvalidRequestError{Message: fmt.Sprintf("unknown effect %q", request.Effect)}
+		return nil, &InvalidRequestError{Message: fmt.Sprintf("unknown effect %q", request.Effect)}
 	}
 
 	var selectedProvider string
 	if request.Connection != "" {
 		resolved, err := c.connection(request.Connection)
 		if err != nil {
-			return SearchResponse{}, err
+			return nil, err
 		}
 		selectedProvider = resolved.Provider
 	}
 
 	terms := strings.Fields(strings.ToLower(request.Query))
-	hits := make([]SearchHit, 0)
+	matches := make([]capability.Descriptor, 0)
 	for _, descriptor := range c.registry.All() {
 		if request.Provider != "" && descriptor.Provider != request.Provider {
 			continue
@@ -133,21 +178,12 @@ func (c *Core) catalog(request SearchRequest, limit int) (SearchResponse, error)
 		if !matched {
 			continue
 		}
-		title := descriptor.Title
-		if title == "" {
-			title = descriptor.Description
-		}
-		hits = append(hits, SearchHit{
-			ID: descriptor.ID, Version: descriptor.Version, Title: title,
-			Description: descriptor.Description, Tags: nonNilStrings(descriptor.Tags),
-			Provider: descriptor.Provider, Effect: descriptor.Risk.Effect,
-			Connections: c.connectionNames(descriptor.Provider),
-		})
-		if len(hits) == limit {
+		matches = append(matches, descriptor)
+		if len(matches) == limit {
 			break
 		}
 	}
-	return SearchResponse{Operations: hits}, nil
+	return matches, nil
 }
 
 // DescribeRequest selects exactly one versioned descriptor. Connection only restricts its possible routes.
@@ -157,10 +193,19 @@ type DescribeRequest struct {
 	Connection string `json:"connection,omitempty"`
 }
 
+// ConnectionRef is the discovery view of one configured route. Name is the stable value an invoke request
+// carries; Description is the optional line its owner maintains and is empty when there is none. The
+// description informs a person or an agent that already asked for this contract, and never selects a
+// route by itself.
+type ConnectionRef struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 // DescribeResponse is the complete operation contract and its possible configured routes.
 type DescribeResponse struct {
 	Operation   capability.Descriptor `json:"operation"`
-	Connections []string              `json:"connections"`
+	Connections []ConnectionRef       `json:"connections"`
 }
 
 // Describe returns one registered descriptor without contacting a provider.
@@ -169,7 +214,7 @@ func (c *Core) Describe(request DescribeRequest) (DescribeResponse, error) {
 	if err != nil {
 		return DescribeResponse{}, err
 	}
-	connections := c.connectionNames(descriptor.Provider)
+	connections := c.connectionRefs(descriptor.Provider)
 	if request.Connection != "" {
 		resolved, err := c.connection(request.Connection)
 		if err != nil {
@@ -180,7 +225,7 @@ func (c *Core) Describe(request DescribeRequest) (DescribeResponse, error) {
 				Connection: request.Connection, Capability: request.Operation,
 			}
 		}
-		connections = []string{request.Connection}
+		connections = []ConnectionRef{c.connectionRef(request.Connection)}
 	}
 	return DescribeResponse{Operation: descriptor, Connections: connections}, nil
 }
@@ -376,6 +421,21 @@ func (c *Core) connection(name string) (*config.Resolved, error) {
 		Target: connection.Target, Service: connection.Service, Credential: connection.Credential,
 		Secrets: c.config.Credentials[connection.Credential],
 	}, nil
+}
+
+// connectionRefs is the described form of connectionNames: the same routes in the same order, each with
+// the description its owner maintains.
+func (c *Core) connectionRefs(provider string) []ConnectionRef {
+	names := c.connectionNames(provider)
+	refs := make([]ConnectionRef, len(names))
+	for i, name := range names {
+		refs[i] = c.connectionRef(name)
+	}
+	return refs
+}
+
+func (c *Core) connectionRef(name string) ConnectionRef {
+	return ConnectionRef{Name: name, Description: c.config.Connections[name].Description}
 }
 
 func (c *Core) connectionNames(provider string) []string {

@@ -946,6 +946,95 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 	}
 }
 
+// openEntryForm opens the form of the single entry of a section.
+func openEntryForm(t *testing.T, m *Model, s section, name string) {
+	t.Helper()
+	openSectionByName(t, m, s)
+	pump(t, m, "enter")
+	if m.screen != screenForm || m.editing != name {
+		t.Fatalf("screen = %v, editing = %q, want the form of %q", m.screen, m.editing, name)
+	}
+}
+
+// A connection description is written, changed, and taken away again through the form alone, and what the
+// store keeps is exactly what stood in the field. The field also says what makes it different from every
+// other field of this editor: what is typed here is published by discovery.
+func TestConnectionDescriptionIsEditedThroughTheForm(t *testing.T) {
+	m, store, _ := newModel(t)
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+	addCredential(t, m, "reader", "WIKI_ID", "WIKI_SECRET")
+	addConnection(t, m, "wiki", "wiki", "reader")
+
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := saved.Connections["wiki"].Description; got != "" {
+		t.Errorf("a new connection starts with the description %q, want none", got)
+	}
+
+	for _, step := range []struct{ typed, want string }{
+		{"the live team wiki, writes land here", "the live team wiki, writes land here"},
+		{"the same instance, read for audits only", "the same instance, read for audits only"},
+		{"", ""},
+	} {
+		openEntryForm(t, m, sectionConnections, "wiki")
+		focusField(t, m, "description")
+		clearField(t, m)
+		typeText(t, m, step.typed)
+		press(t, m, "enter")
+		if m.fail != "" {
+			t.Fatalf("editor reported %q", m.fail)
+		}
+		saved, err := store.Load()
+		if err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if got := saved.Connections["wiki"].Description; got != step.want {
+			t.Errorf("saved description = %q, want %q", got, step.want)
+		}
+		// The route itself is untouched by a change to the text that describes it.
+		if saved.Connections["wiki"].Service != "wiki" || saved.Connections["wiki"].Credential != "reader" {
+			t.Errorf("the connection changed: %+v", saved.Connections["wiki"])
+		}
+	}
+
+	openEntryForm(t, m, sectionConnections, "wiki")
+	view := strings.Join(strings.Fields(m.View()), " ")
+	for _, want := range []string{"description", "discovery publishes it", "never carry a secret"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the connection form does not say %q:\n%s", want, m.View())
+		}
+	}
+}
+
+// A description the core refuses is reported in the editor and never reaches the file.
+func TestATooLongConnectionDescriptionIsRefused(t *testing.T) {
+	m, store, _ := newModel(t)
+	// A line of 201 characters only fits into a terminal wide enough to draw it; the editor refuses to
+	// work in one that cannot show what is being edited.
+	m.Update(tea.WindowSizeMsg{Width: 400, Height: 200})
+	addService(t, m, "wiki", "https://wiki.example.invalid")
+	addCredential(t, m, "reader", "WIKI_ID", "WIKI_SECRET")
+	addConnection(t, m, "wiki", "wiki", "reader")
+
+	openEntryForm(t, m, sectionConnections, "wiki")
+	focusField(t, m, "description")
+	typeText(t, m, strings.Repeat("a", 201))
+	press(t, m, "enter")
+
+	if m.fail == "" || !strings.Contains(m.fail, "201 characters") {
+		t.Errorf("fail = %q, want the reason the core gave", m.fail)
+	}
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := saved.Connections["wiki"].Description; got != "" {
+		t.Errorf("saved description = %q, want the refused text nowhere on disk", got)
+	}
+}
+
 // What the form shows is what the store gets: spaces at the edges are dropped where the user can see it.
 func TestSpacesAtTheEdgesAreTrimmedVisibly(t *testing.T) {
 	m, store, _ := newModel(t)

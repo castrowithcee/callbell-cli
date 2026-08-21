@@ -23,11 +23,14 @@ func newToolsCommand(opts *Options, registry *capability.Registry) *cobra.Comman
 	cmd := &cobra.Command{
 		Use:   "tools [namespace]",
 		Short: "List the tools this installation offers",
-		Long: "Tools lists every tool of the local catalog with its version, effect, description, and the\n" +
-			"connections that can run it. It is answered from the local configuration alone: no provider is\n" +
-			"contacted and no secret is read.\n\n" +
+		Long: "Tools is the discovery index of the local catalog: every tool with its ID and the number of\n" +
+			"configured connections that can run it. A tool without a configured connection stays listed\n" +
+			"with zero. It is answered from the local configuration alone: no provider is contacted and no\n" +
+			"secret is read.\n\n" +
 			"An optional namespace argument restricts the catalog to one provider prefix, and --query keeps\n" +
 			"only the tools whose ID, title, description, or tags contain every given term.\n\n" +
+			"Everything else about a tool, including which connections can run it and what each one is for,\n" +
+			"is one 'callbell tool <tool-id>' away.\n\n" +
 			"The output is " + toonContract + " with LF line endings. --output json returns the same data as\n" +
 			"JSON.",
 		Args: atMostOneArg("tool namespace"),
@@ -51,7 +54,7 @@ func newToolsCommand(opts *Options, registry *capability.Registry) *cobra.Comman
 			if err != nil {
 				return classifyUserError(err)
 			}
-			return emitDocument(c, format, map[string]any{"tools": response.Operations})
+			return emitDocument(c, format, map[string]any{"tools": response.Tools})
 		},
 	}
 	cmd.Flags().StringVar(&query, "query", "", "keep only the tools matching every term of this text")
@@ -65,8 +68,10 @@ func newToolCommand(opts *Options, registry *capability.Registry) *cobra.Command
 		Use:   "tool <tool-id>",
 		Short: "Describe one tool contract",
 		Long: "Tool prints the complete contract of one tool: version, description, tags, input and output\n" +
-			"schema, risk metadata, secret-free examples, and the connections that can run it. It is\n" +
-			"answered from the local configuration alone: no provider is contacted and no secret is read.\n\n" +
+			"schema, risk metadata, secret-free examples, and the connections that can run it. Every\n" +
+			"connection is named with its stable invoke value and the optional one-line description its\n" +
+			"owner maintains. It is answered from the local configuration alone: no provider is contacted\n" +
+			"and no secret is read.\n\n" +
 			"The output is " + toonContract + " with LF line endings. --output json returns the same data as\n" +
 			"JSON.",
 		Args: exactlyOneArg("tool ID"),

@@ -79,6 +79,56 @@ func TestSecretRoleDescriptionsExplainTheBookStackValues(t *testing.T) {
 }
 
 // An empty configuration must round-trip to the same model as any other.
+// A description is written, read back, changed, and removed again through the same store, and a
+// configuration that never had one round-trips unchanged.
+func TestConnectionDescriptionSurvivesTheStore(t *testing.T) {
+	store, _ := newTarget(t)
+	cfg := sample(t)
+	must(t, store.Save(cfg))
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := loaded.Connections["wiki"].Description; got != "" {
+		t.Errorf("description = %q, want the empty string of a connection that never had one", got)
+	}
+
+	steps := []struct{ write, want string }{
+		{"the live team wiki, writes land here", "the live team wiki, writes land here"},
+		{"  the same instance,   read for audits only  ", "the same instance, read for audits only"},
+		{"", ""},
+	}
+	for _, step := range steps {
+		conn := loaded.Connections["wiki"]
+		conn.Description = step.write
+		must(t, loaded.SetConnection("wiki", conn))
+		must(t, store.Save(loaded))
+		loaded, err = store.Load()
+		if err != nil {
+			t.Fatalf("Load() = %v", err)
+		}
+		if got := loaded.Connections["wiki"].Description; got != step.want {
+			t.Errorf("description = %q, want %q", got, step.want)
+		}
+	}
+
+	// A description the core refuses never reaches the file: what is on disk is the last accepted state.
+	conn := loaded.Connections["wiki"]
+	conn.Description = strings.Repeat("a", 201)
+	must(t, loaded.SetConnection("wiki", conn))
+	if err := store.Save(loaded); err == nil {
+		t.Fatal("Save() accepted a description over the limit")
+	}
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := reloaded.Connections["wiki"].Description; got != "" {
+		t.Errorf("stored description = %q, want the last accepted state", got)
+	}
+}
+
 func TestSaveAndLoadEmptyRoundTrip(t *testing.T) {
 	store, _ := newTarget(t)
 	cfg := store.New()

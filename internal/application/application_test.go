@@ -37,8 +37,14 @@ func TestSearchAndDescribeAreLocalAndDeterministic(t *testing.T) {
 	if described.Operation.InputSchema == nil || described.Operation.OutputSchema == nil {
 		t.Errorf("Describe() omits schemas: %+v", described.Operation)
 	}
-	if !reflect.DeepEqual(described.Connections, []string{"archive", "primary"}) {
-		t.Errorf("connections = %v", described.Connections)
+	// Describe answers with the routes themselves: the name an invoke request carries, and the line its
+	// owner maintains where there is one. A route without a description carries the empty string.
+	want := []ConnectionRef{
+		{Name: "archive", Description: testDescriptions["archive"]},
+		{Name: "primary"},
+	}
+	if !reflect.DeepEqual(described.Connections, want) {
+		t.Errorf("connections = %+v, want %+v", described.Connections, want)
 	}
 	if *calls != 0 {
 		t.Errorf("handlers called = %d, want 0", *calls)
@@ -46,7 +52,8 @@ func TestSearchAndDescribeAreLocalAndDeterministic(t *testing.T) {
 }
 
 // Search stays bounded for the request-bound agent surface, while Tools answers the complete catalog the
-// CLI publishes. Both apply the same filters to the same data.
+// CLI publishes. Both apply the same filters to the same data, but Tools publishes only the index: the
+// tool ID and how many configured connections can run it.
 func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
 	registry := capability.NewRegistry()
 	if err := registry.RegisterProvider(config.ProviderMetadata{ID: "fake", Name: "Fake"}, nil); err != nil {
@@ -87,15 +94,22 @@ func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tools() = %v", err)
 	}
-	if len(listed.Operations) != len(operations) {
-		t.Errorf("Tools() = %d operations, want %d", len(listed.Operations), len(operations))
+	if len(listed.Tools) != len(operations) {
+		t.Errorf("Tools() = %d tools, want %d", len(listed.Tools), len(operations))
 	}
-	if !reflect.DeepEqual(listed.Operations[:maxSearchResults], searched.Operations) {
-		t.Error("Tools() and Search() disagree about the operations they both return")
+	for i, tool := range listed.Tools[:maxSearchResults] {
+		if tool.ID != searched.Operations[i].ID {
+			t.Errorf("Tools()[%d] = %q, Search()[%d] = %q", i, tool.ID, i, searched.Operations[i].ID)
+		}
+		// This configuration has no connection at all, so an unconfigured tool stays visible with zero
+		// rather than disappearing from the index.
+		if tool.Connections != 0 {
+			t.Errorf("Tools()[%d].Connections = %d, want 0", i, tool.Connections)
+		}
 	}
 	filtered, err := core.Tools(SearchRequest{Query: "object3.list listing"})
-	if err != nil || len(filtered.Operations) != 1 || filtered.Operations[0].ID != "fake.object3.list" {
-		t.Errorf("Tools(query) = %+v, %v", filtered.Operations, err)
+	if err != nil || len(filtered.Tools) != 1 || filtered.Tools[0].ID != "fake.object3.list" {
+		t.Errorf("Tools(query) = %+v, %v", filtered.Tools, err)
 	}
 	if _, err := core.Tools(SearchRequest{Effect: "invented"}); err == nil {
 		t.Error("Tools(unknown effect) = nil error")
@@ -458,6 +472,10 @@ func TestInvokeValidatesTheRedactedOutput(t *testing.T) {
 	}
 }
 
+// testDescriptions gives one of the test routes a maintained description and leaves the other one without,
+// so a test can tell the published text apart from the empty string that stands for a missing one.
+var testDescriptions = map[string]string{"archive": "read-only copy of the wiki, safe for bulk reads"}
+
 func testCore(t *testing.T, connections []string, defaults map[string]string, withValue bool) (*Core, *int) {
 	t.Helper()
 	calls := new(int)
@@ -488,7 +506,9 @@ func testCore(t *testing.T, connections []string, defaults map[string]string, wi
 		cfg.Credentials[credential] = config.Credential{
 			Type: config.CredentialTypeEnv, Values: map[string]string{"token": "FAKE_TOKEN"},
 		}
-		cfg.Connections[name] = config.Connection{Service: service, Credential: credential}
+		cfg.Connections[name] = config.Connection{
+			Service: service, Credential: credential, Description: testDescriptions[name],
+		}
 	}
 	env := func(name string) string {
 		if withValue && name == "FAKE_TOKEN" {

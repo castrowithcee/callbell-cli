@@ -106,8 +106,7 @@ func TestNextcloudToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"id: nextcloud.files.list", "id: nextcloud.files.stat", "effect: read",
-		"connections[4]: files-archive,files-audit,files-partner,files-reports",
+		"tools[2]{connections,id}:", "4,nextcloud.files.list", "4,nextcloud.files.stat",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)
@@ -144,7 +143,10 @@ func TestNextcloudToolContractKeepsInstanceIdentityAndRootOutOfTheArguments(t *t
 		Tool struct {
 			InputSchema json.RawMessage `json:"input_schema"`
 		} `json:"tool"`
-		Connections []string `json:"connections"`
+		Connections []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"connections"`
 	}
 	if err := json.Unmarshal(document, &described); err != nil {
 		t.Fatalf("tool document = %s: %v", document, err)

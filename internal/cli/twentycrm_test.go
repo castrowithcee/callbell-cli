@@ -89,8 +89,7 @@ func TestTwentyToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"id: twentycrm.companies.get", "id: twentycrm.companies.list", "effect: read",
-		"connections[2]: crm,crm-internal",
+		"tools[2]{connections,id}:", "2,twentycrm.companies.get", "2,twentycrm.companies.list",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)
@@ -129,7 +128,10 @@ func TestTwentyToolContractExposesOnlyTheStableCoreProjection(t *testing.T) {
 			InputSchema  json.RawMessage `json:"input_schema"`
 			OutputSchema json.RawMessage `json:"output_schema"`
 		} `json:"tool"`
-		Connections []string `json:"connections"`
+		Connections []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"connections"`
 	}
 	if err := json.Unmarshal(document, &described); err != nil {
 		t.Fatalf("tool document = %s: %v", document, err)

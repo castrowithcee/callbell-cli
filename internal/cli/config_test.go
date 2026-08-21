@@ -28,6 +28,7 @@ connections:
   wiki:
     service: wiki
     credential: reader
+    description: read-only account on the team wiki
 defaults:
   connections:
     knowledge: wiki

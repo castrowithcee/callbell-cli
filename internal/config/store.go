@@ -238,12 +238,14 @@ func (c *Config) DeleteCredential(name string) error {
 	return nil
 }
 
-// SetConnection creates or replaces a connection.
+// SetConnection creates or replaces a connection. The description is stored in its normalized form, so an
+// editor and a hand-written file end up with the same text.
 func (c *Config) SetConnection(name string, conn Connection) error {
 	if name == "" {
 		return errors.New("a connection name must not be empty")
 	}
 	c.ensure()
+	conn.Description = normalizeDescription(conn.Description)
 	c.Connections[name] = conn
 	return nil
 }
@@ -283,6 +285,15 @@ func (c *Config) DeleteDefault(domain string) error {
 	}
 	delete(c.Defaults.Connections, domain)
 	return nil
+}
+
+// normalize rewrites the free text a user maintains into the one form this build stores, compares and
+// publishes. It changes no reference and no rule; a configuration is valid before and after it.
+func (c *Config) normalize() {
+	for name, conn := range c.Connections {
+		conn.Description = normalizeDescription(conn.Description)
+		c.Connections[name] = conn
+	}
 }
 
 // ensure makes the maps usable on a configuration that was decoded without them.

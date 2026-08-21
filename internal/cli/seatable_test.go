@@ -107,8 +107,7 @@ func TestSeaTableToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"id: seatable.rows.get", "id: seatable.rows.list", "effect: read",
-		"connections[4]: onprem-rows,sales-rows,sales-rows-audit,support-rows",
+		"tools[2]{connections,id}:", "4,seatable.rows.get", "4,seatable.rows.list",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)
@@ -145,7 +144,10 @@ func TestSeaTableToolContractKeepsBaseTableAndViewOutOfTheArguments(t *testing.T
 		Tool struct {
 			InputSchema json.RawMessage `json:"input_schema"`
 		} `json:"tool"`
-		Connections []string `json:"connections"`
+		Connections []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"connections"`
 	}
 	if err := json.Unmarshal(document, &described); err != nil {
 		t.Fatalf("tool document = %s: %v", document, err)

@@ -62,6 +62,7 @@ connections:
   wiki:
     service: wiki
     credential: reader
+    description: read-only account on the team wiki
   alerts:
     service: telegram
     credential: bot
@@ -114,25 +115,34 @@ func jsonEqual(a, b []byte) bool {
 		reflect.DeepEqual(first, second)
 }
 
-func toolIDs(t *testing.T, stdout string) []string {
+// toolSummaries decodes the compact index. Decoding into the core type is what proves that the command
+// publishes that model and nothing else: a stray field would fail the strict decoder below.
+func toolSummaries(t *testing.T, stdout string) []application.ToolSummary {
 	t.Helper()
 	var document struct {
-		Tools []struct {
-			ID string `json:"id"`
-		} `json:"tools"`
+		Tools []application.ToolSummary `json:"tools"`
 	}
-	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
-		t.Fatalf("tools output is not valid JSON: %v: %s", err, stdout)
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatalf("tools output is not the compact index: %v: %s", err, stdout)
 	}
-	ids := make([]string, len(document.Tools))
-	for i, tool := range document.Tools {
+	return document.Tools
+}
+
+func toolIDs(t *testing.T, stdout string) []string {
+	t.Helper()
+	summaries := toolSummaries(t, stdout)
+	ids := make([]string, len(summaries))
+	for i, tool := range summaries {
 		ids[i] = tool.ID
 	}
 	return ids
 }
 
-// Acceptance 1: the catalog is a deterministic local TOON view of the configured BookStack and Telegram
-// tools, produced without any provider I/O.
+// Acceptance 1: the catalog is a deterministic local TOON index of the configured BookStack and Telegram
+// tools, produced without any provider I/O. Each entry is the tool ID and the number of configured
+// connections and nothing else: what a tool is, does, and risks belongs to its own contract.
 func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	cfg, calls, _ := catalogEnvironment(t)
 
@@ -140,20 +150,28 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	if code != exitOK || stderr != "" {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "tools[11]:\n") || !strings.HasSuffix(stdout, "\n") ||
+	if !strings.HasPrefix(stdout, "tools[11]{connections,id}:\n") || !strings.HasSuffix(stdout, "\n") ||
 		strings.Contains(stdout, "\r") {
-		t.Errorf("stdout = %q, want an LF TOON document with an eleven-element tools header", stdout)
+		t.Errorf("stdout = %q, want an LF TOON table of eleven connections and id rows", stdout)
 	}
 	for _, want := range []string{
-		"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
-		"id: lexware.invoices.list", "id: lexware.invoices.get",
-		"id: twentycrm.companies.list", "id: twentycrm.companies.get",
-		"id: seatable.rows.list", "id: seatable.rows.get",
-		"id: nextcloud.files.list", "id: nextcloud.files.stat",
-		"connections[1]: wiki", "connections[1]: alerts", "effect: create", "effect: read",
+		// BookStack has exactly one configured connection, Telegram one, and every other compiled
+		// provider none. An unconfigured tool stays visible with zero.
+		"1,bookstack.pages.get", "1,bookstack.pages.list", "1,telegram.messages.send",
+		"0,lexware.invoices.list", "0,lexware.invoices.get",
+		"0,twentycrm.companies.list", "0,twentycrm.companies.get",
+		"0,seatable.rows.list", "0,seatable.rows.get",
+		"0,nextcloud.files.list", "0,nextcloud.files.stat",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout does not contain %q:\n%s", want, stdout)
+		}
+	}
+	// The index carries no second contract: title, description, tags, effect, and connection names stay
+	// in the tool document that answers for exactly one tool.
+	for _, absent := range []string{"title", "description", "tags", "effect", "wiki", "alerts", "version"} {
+		if strings.Contains(stdout, absent) {
+			t.Errorf("the compact index published %q:\n%s", absent, stdout)
 		}
 	}
 	for i := 0; i < 3; i++ {
@@ -164,6 +182,26 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	if got := calls.Load(); got != 0 {
 		t.Errorf("provider calls = %d, want 0", got)
 	}
+
+	t.Run("the TOON default and --output json carry the same index", func(t *testing.T) {
+		code, jsonOut, stderr := runTools(t, nil, "tools", "--config", cfg, "--output", "json")
+		if code != exitOK || stderr != "" {
+			t.Fatalf("exit=%d stderr=%q", code, stderr)
+		}
+		if got := toonOfJSON(t, jsonOut); got != stdout {
+			t.Errorf("TOON output = %q, want the TOON rendering of the JSON data %q", stdout, got)
+		}
+		for _, tool := range toolSummaries(t, jsonOut) {
+			want := 0
+			switch tool.ID {
+			case "bookstack.pages.get", "bookstack.pages.list", "telegram.messages.send":
+				want = 1
+			}
+			if tool.Connections != want {
+				t.Errorf("%s connections = %d, want %d", tool.ID, tool.Connections, want)
+			}
+		}
+	})
 }
 
 // Acceptance 2: the namespace argument and --query restrict the same catalog.
@@ -241,8 +279,8 @@ func TestToolDescribesOneCompleteContract(t *testing.T) {
 	}
 
 	var document struct {
-		Tool        capability.Descriptor `json:"tool"`
-		Connections []string              `json:"connections"`
+		Tool        capability.Descriptor       `json:"tool"`
+		Connections []application.ConnectionRef `json:"connections"`
 	}
 	if err := json.Unmarshal([]byte(jsonOut), &document); err != nil {
 		t.Fatalf("tool output is not valid JSON: %v", err)
@@ -255,9 +293,29 @@ func TestToolDescribesOneCompleteContract(t *testing.T) {
 		tool.Risk.Confirmation != capability.ConfirmationNone || tool.Risk.DataSensitivity == "" {
 		t.Errorf("tool contract = %+v", tool)
 	}
-	if !reflect.DeepEqual(document.Connections, []string{"wiki"}) {
-		t.Errorf("connections = %v, want [wiki]", document.Connections)
+	// A connection is published as the name that selects it plus the line its owner maintains, so a
+	// reader can tell two routes of one provider apart without opening the configuration.
+	want := []application.ConnectionRef{{Name: "wiki", Description: "read-only account on the team wiki"}}
+	if !reflect.DeepEqual(document.Connections, want) {
+		t.Errorf("connections = %+v, want %+v", document.Connections, want)
 	}
+
+	t.Run("a connection without a description carries the empty string", func(t *testing.T) {
+		code, jsonOut, stderr := runTools(t, nil, "tool", "telegram.messages.send", "--config", cfg,
+			"--output", "json")
+		if code != exitOK || stderr != "" {
+			t.Fatalf("exit=%d stderr=%q", code, stderr)
+		}
+		var document struct {
+			Connections []application.ConnectionRef `json:"connections"`
+		}
+		if err := json.Unmarshal([]byte(jsonOut), &document); err != nil {
+			t.Fatalf("tool output is not valid JSON: %v", err)
+		}
+		if want := []application.ConnectionRef{{Name: "alerts"}}; !reflect.DeepEqual(document.Connections, want) {
+			t.Errorf("connections = %+v, want %+v", document.Connections, want)
+		}
+	})
 
 	t.Run("there is no verb below a tool", func(t *testing.T) {
 		code, stdout, stderr := runTools(t, nil, "tool", "show", "bookstack.pages.list", "--config", cfg)
@@ -470,31 +528,25 @@ func TestToolCommandsKeepTheDataOfTheRemovedCommands(t *testing.T) {
 	if code != exitOK || stderr != "" {
 		t.Fatalf("tools exit=%d stderr=%q", code, stderr)
 	}
-	var listed struct {
-		Tools []application.SearchHit `json:"tools"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
-		t.Fatalf("tools output = %q: %v", stdout, err)
-	}
 	catalog, err := core.Tools(application.SearchRequest{})
 	if err != nil {
 		t.Fatalf("Tools() = %v", err)
 	}
-	if !reflect.DeepEqual(listed.Tools, catalog.Operations) {
-		t.Errorf("tools = %+v, want %+v", listed.Tools, catalog.Operations)
+	if got := toolSummaries(t, stdout); !reflect.DeepEqual(got, catalog.Tools) {
+		t.Errorf("tools = %+v, want %+v", got, catalog.Tools)
 	}
 	for _, descriptor := range defaultRegistry().All() {
 		found := false
-		for _, hit := range listed.Tools {
-			found = found || (hit.ID == descriptor.ID && hit.Effect == descriptor.Risk.Effect &&
-				hit.Description == descriptor.Description)
+		for _, tool := range catalog.Tools {
+			found = found || tool.ID == descriptor.ID
 		}
 		if !found {
-			t.Errorf("tools is missing %q with its effect and description", descriptor.ID)
+			t.Errorf("the index is missing %q", descriptor.ID)
 		}
 	}
 
-	// search filtered the same catalog by query.
+	// search filtered the same catalog by query. The index keeps that filter and drops only the payload,
+	// so the two views name the same tools in the same order.
 	code, stdout, stderr = runTools(t, nil, "tools", "--config", cfg, "--query", "pages", "--output", "json")
 	if code != exitOK || stderr != "" {
 		t.Fatalf("query exit=%d stderr=%q", code, stderr)
@@ -503,11 +555,18 @@ func TestToolCommandsKeepTheDataOfTheRemovedCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search() = %v", err)
 	}
-	if err := json.Unmarshal([]byte(stdout), &listed); err != nil {
-		t.Fatalf("tools output = %q: %v", stdout, err)
+	filtered := toolSummaries(t, stdout)
+	if len(filtered) != len(searched.Operations) {
+		t.Fatalf("query result = %+v, want the %d searched operations", filtered, len(searched.Operations))
 	}
-	if !reflect.DeepEqual(listed.Tools, searched.Operations) {
-		t.Errorf("query result = %+v, want %+v", listed.Tools, searched.Operations)
+	for i, tool := range filtered {
+		if tool.ID != searched.Operations[i].ID {
+			t.Errorf("query result[%d] = %q, want %q", i, tool.ID, searched.Operations[i].ID)
+		}
+		if tool.Connections != len(searched.Operations[i].Connections) {
+			t.Errorf("query result[%d] connections = %d, want %d", i, tool.Connections,
+				len(searched.Operations[i].Connections))
+		}
 	}
 
 	// describe returned one complete descriptor and its connections.
@@ -517,8 +576,8 @@ func TestToolCommandsKeepTheDataOfTheRemovedCommands(t *testing.T) {
 			t.Fatalf("tool %s exit=%d stderr=%q", id, code, stderr)
 		}
 		var document struct {
-			Tool        json.RawMessage `json:"tool"`
-			Connections []string        `json:"connections"`
+			Tool        json.RawMessage             `json:"tool"`
+			Connections []application.ConnectionRef `json:"connections"`
 		}
 		if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 			t.Fatalf("tool output = %q: %v", stdout, err)

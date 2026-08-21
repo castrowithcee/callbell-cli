@@ -63,6 +63,86 @@ func TestLoadValidFixture(t *testing.T) {
 	if got := cfg.Services["wiki-archive"].Options["page_size"]; got != "50" {
 		t.Errorf("wiki-archive page_size = %q, want 50", got)
 	}
+	// A description is optional: the fixture maintains one for archive and none for wiki, and both are
+	// valid configurations of the same schema version.
+	if got := cfg.Connections["archive"].Description; got != "read-only copy of the wiki, safe for bulk reads" {
+		t.Errorf("archive description = %q", got)
+	}
+	if got := wiki.Description; got != "" {
+		t.Errorf("wiki description = %q, want the empty string for a connection without one", got)
+	}
+}
+
+// The connection description is optional prose the user maintains and discovery publishes. It arrives in
+// one normalized form, it stays one short line, and a refusal never quotes what was written.
+func TestConnectionDescriptionIsOneShortNormalizedLine(t *testing.T) {
+	const canary = "config-description-canary-8c17"
+	withDescription := func(lines string) string {
+		return strings.Replace(minimal, "    credential: reader\n", "    credential: reader\n"+lines, 1)
+	}
+
+	t.Run("an absent description is the empty string", func(t *testing.T) {
+		cfg, err := Decode(strings.NewReader(minimal), testProviders)
+		if err != nil {
+			t.Fatalf("Decode() = %v", err)
+		}
+		if got := cfg.Connections["wiki"].Description; got != "" {
+			t.Errorf("description = %q, want the empty string", got)
+		}
+	})
+
+	t.Run("blanks at the edges and between words are normalized", func(t *testing.T) {
+		cfg, err := Decode(strings.NewReader(
+			withDescription("    description: \"  the live   team wiki \"\n")), testProviders)
+		if err != nil {
+			t.Fatalf("Decode() = %v", err)
+		}
+		if got, want := cfg.Connections["wiki"].Description, "the live team wiki"; got != want {
+			t.Errorf("description = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a description of exactly the limit is accepted", func(t *testing.T) {
+		cfg, err := Decode(strings.NewReader(
+			withDescription("    description: "+strings.Repeat("a", maxDescriptionLength)+"\n")), testProviders)
+		if err != nil {
+			t.Fatalf("Decode() = %v", err)
+		}
+		if got := len(cfg.Connections["wiki"].Description); got != maxDescriptionLength {
+			t.Errorf("description length = %d, want %d", got, maxDescriptionLength)
+		}
+	})
+
+	refusals := []struct {
+		name, lines, want string
+	}{
+		{
+			name:  "a line break",
+			lines: "    description: |\n      " + canary + "\n      second line\n",
+			want:  "must not contain a line break",
+		},
+		{
+			name:  "one character too many",
+			lines: "    description: " + canary + strings.Repeat("b", maxDescriptionLength+1-len(canary)) + "\n",
+			want:  "is 201 characters long",
+		},
+	}
+	for _, tt := range refusals {
+		t.Run(tt.name+" is refused", func(t *testing.T) {
+			_, err := Decode(strings.NewReader(withDescription(tt.lines)), testProviders)
+			if err == nil {
+				t.Fatal("Decode() = nil error")
+			}
+			message := err.Error()
+			if !strings.Contains(message, "connections.wiki.description: ") || !strings.Contains(message, tt.want) {
+				t.Errorf("error = %q, want it to name the key and %q", message, tt.want)
+			}
+			// A description is free text, which is exactly where a secret gets pasted by accident.
+			if strings.Contains(message, canary) {
+				t.Errorf("error = %q, want it not to quote the description", message)
+			}
+		})
+	}
 }
 
 // The shipped example must stay valid, otherwise the documentation promises a file that does not load.

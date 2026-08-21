@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	yaml "go.yaml.in/yaml/v3"
 )
@@ -55,10 +56,16 @@ type Credential struct {
 
 // Connection binds exactly one service to exactly one credential. Target is an optional provider-specific
 // scope inside that service.
+//
+// Description is optional prose the user maintains. A name like "personal" or "crm-internal" is a stable
+// selector, not an explanation, so this one line says what the route is for and lets a reader tell two
+// routes of one provider apart. Discovery publishes it verbatim and nothing is ever sent to a provider,
+// which is why it is configuration, never a secret and never personal data.
 type Connection struct {
-	Service    string `yaml:"service"`
-	Credential string `yaml:"credential"`
-	Target     string `yaml:"target,omitempty"`
+	Service     string `yaml:"service"`
+	Credential  string `yaml:"credential"`
+	Target      string `yaml:"target,omitempty"`
+	Description string `yaml:"description,omitempty"`
 }
 
 // Defaults holds the connection chosen for a domain when no connection is given explicitly.
@@ -158,6 +165,7 @@ func Decode(r io.Reader, providers ...ProviderCatalog) (*Config, error) {
 	// A decoded configuration is directly editable, and an absent section round-trips to the same model
 	// as an empty one.
 	cfg.ensure()
+	cfg.normalize()
 	return &cfg, nil
 }
 
@@ -301,6 +309,9 @@ func (c *Config) Validate() error {
 				}
 			}
 		}
+		if err := validateDescription(conn.Description); err != nil {
+			report("connections.%s.description: %v", name, err)
+		}
 		if ok {
 			metadata, _ := providers.ProviderMetadata(service.Provider)
 			if metadata.Target.Required && strings.TrimSpace(conn.Target) == "" {
@@ -413,6 +424,36 @@ const envNameRule = "must be the name of an environment variable, written with l
 // the input: whatever stands under a keyring credential is most likely the secret itself.
 const keyringValuesRule = "must be absent for a keyring credential, whose secrets live in the credential " +
 	"store; set them with 'callbell credential set'"
+
+// maxDescriptionLength bounds a connection description. It labels a route for the person choosing one, it
+// is not documentation, and discovery repeats it on every describe, so it stays short enough to read at a
+// glance.
+const maxDescriptionLength = 200
+
+// descriptionRule states what a connection description must look like. Like the other rules it never
+// quotes the input: a description is free text, and free text is exactly where a secret gets pasted by
+// accident.
+const descriptionRule = "a connection description must be a single line of at most 200 characters; " +
+	"discovery publishes it, so it must never carry a secret or personal data"
+
+// validateDescription refuses a description that is not one short line. An empty description is a missing
+// one and needs no rule.
+func validateDescription(text string) error {
+	if strings.ContainsAny(text, "\n\r") {
+		return errors.New("must not contain a line break: " + descriptionRule)
+	}
+	if length := utf8.RuneCountInString(normalizeDescription(text)); length > maxDescriptionLength {
+		return fmt.Errorf("is %d characters long: %s", length, descriptionRule)
+	}
+	return nil
+}
+
+// normalizeDescription drops the blanks at the edges and collapses the runs between words, so the same
+// sentence typed with different spacing is stored, measured and published as one text. A line break is
+// deliberately not collapsed: validateDescription refuses it, because a description is one line.
+func normalizeDescription(text string) string {
+	return strings.Join(strings.FieldsFunc(text, func(r rune) bool { return r == ' ' || r == '\t' }), " ")
+}
 
 // nameRule states the character set of every service, credential, connection and domain name. These names
 // are configuration keys and `--connection` arguments, so they stay free of quoting and shell surprises.

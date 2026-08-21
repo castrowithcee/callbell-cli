@@ -180,6 +180,7 @@ connections:
   primary:
     service: wiki-primary
     credential: primary-reader
+    description: the live team wiki, writes land here
   archive:
     service: wiki-archive
     credential: archive-reader
@@ -223,21 +224,27 @@ defaults:
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
-		// Every compiled tool is listed with the connections that can run it, so a tool without a
-		// configured route is visible as exactly that instead of silently missing.
-		if !strings.HasPrefix(stdout, "tools[11]:\n") {
-			t.Errorf("stdout = %q, want a TOON catalog of the compiled tools", stdout)
+		// Every compiled tool is listed with the number of connections that can run it, so a tool
+		// without a configured route is visible as exactly that instead of silently missing.
+		if !strings.HasPrefix(stdout, "tools[11]{connections,id}:\n") {
+			t.Errorf("stdout = %q, want a TOON index of the compiled tools", stdout)
 		}
 		for _, want := range []string{
-			"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
-			"id: lexware.invoices.list", "id: lexware.invoices.get",
-			"id: twentycrm.companies.list", "id: twentycrm.companies.get",
-			"id: seatable.rows.list", "id: seatable.rows.get",
-			"id: nextcloud.files.list", "id: nextcloud.files.stat",
-			"connections[2]: archive,primary", "connections: []",
+			"2,bookstack.pages.get", "2,bookstack.pages.list", "0,telegram.messages.send",
+			"0,lexware.invoices.list", "0,lexware.invoices.get",
+			"0,twentycrm.companies.list", "0,twentycrm.companies.get",
+			"0,seatable.rows.list", "0,seatable.rows.get",
+			"0,nextcloud.files.list", "0,nextcloud.files.stat",
 		} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+			}
+		}
+		// The index says which tools exist and which of them have a route; what a tool is and what its
+		// routes are for is one tool document away.
+		for _, absent := range []string{"title", "description", "effect", "archive", "primary"} {
+			if strings.Contains(stdout, absent) {
+				t.Errorf("stdout = %q, want the compact index without %q", stdout, absent)
 			}
 		}
 	})
@@ -248,7 +255,11 @@ defaults:
 		if code != 0 {
 			t.Fatalf("exit %d", code)
 		}
-		for _, want := range []string{`"id":"bookstack.pages.list"`, `"effect":"read"`, `"connections":["archive","primary"]`} {
+		// A route is published as the name an invoke request carries and the line its owner maintains;
+		// a route without a description carries the empty string rather than disappearing.
+		for _, want := range []string{`"id":"bookstack.pages.list"`, `"effect":"read"`,
+			`"connections":[{"description":"","name":"archive"},` +
+				`{"description":"the live team wiki, writes land here","name":"primary"}]`} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 			}
@@ -682,9 +693,11 @@ connections:
   wiki-primary:
     service: wiki
     credential: wiki-reader
+    description: the live wiki instance
   wiki-audit:
     service: wiki
     credential: wiki-reader
+    description: the same instance read for audits only
   telegram-alerts:
     service: telegram
     credential: bot-a
@@ -726,10 +739,8 @@ defaults: {}
 
 	t.Run("the tool CLI and MCP share one core", func(t *testing.T) {
 		// The public CLI names the tool taxonomy, the fixed broker tools name the core contract. Both
-		// answer from the same application core, so their payloads must be identical.
+		// answer from the same application core, so the payloads they both publish must be identical.
 		cli := map[string]any{
-			"search": member(t, jsonCLIDocument(t, c, "", "tools", "bookstack",
-				"--query", "pages", "--output", "json"), "tools"),
 			"describe": member(t, jsonCLIDocument(t, c, "", "tool", "bookstack.pages.get",
 				"--output", "json"), "tool"),
 			"connections": member(t, jsonCLIDocument(t, c, "", "tool", "bookstack.pages.get",
@@ -753,7 +764,7 @@ defaults: {}
 		}
 		responses := decodeMCP(t, stdout)
 		for cliKey, mcpKey := range map[string]string{
-			"search": "operations", "describe": "operation", "connections": "connections", "invoke": "",
+			"describe": "operation", "connections": "connections", "invoke": "",
 		} {
 			name := cliKey
 			if cliKey == "connections" {
@@ -761,6 +772,25 @@ defaults: {}
 			}
 			if got := member(t, mcpData(t, responses[name]), mcpKey); !reflect.DeepEqual(cli[cliKey], got) {
 				t.Errorf("%s differs: CLI=%#v MCP=%#v", cliKey, cli[cliKey], got)
+			}
+		}
+
+		// callbell.search keeps the request-bound agent contract, while the public index publishes only
+		// the tool ID and how many routes can run it. What both must agree on is which tools exist and
+		// how many routes each one has.
+		index, searched := member(t, jsonCLIDocument(t, c, "", "tools", "bookstack", "--query", "pages",
+			"--output", "json"), "tools"), member(t, mcpData(t, responses["search"]), "operations")
+		indexed, indexOK := index.([]any)
+		operations, searchOK := searched.([]any)
+		if !indexOK || !searchOK || len(indexed) == 0 || len(indexed) != len(operations) {
+			t.Fatalf("index=%#v search=%#v", index, searched)
+		}
+		for i := range indexed {
+			entry, _ := indexed[i].(map[string]any)
+			hit, _ := operations[i].(map[string]any)
+			routes, _ := hit["connections"].([]any)
+			if len(entry) != 2 || entry["id"] != hit["id"] || entry["connections"] != float64(len(routes)) {
+				t.Errorf("index[%d] = %#v, want only %v with its %d routes", i, entry, hit["id"], len(routes))
 			}
 		}
 	})

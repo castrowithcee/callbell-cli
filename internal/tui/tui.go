@@ -102,7 +102,12 @@ const (
 	// repeating the sentence under the next one would read like a fault and add nothing.
 	envHint = "every role row holds the NAME of an environment variable that holds the secret, " +
 		"never the secret itself"
-	typeHint   = "env names one environment variable per role; keyring keeps the secrets in the credential store"
+	typeHint = "env names one environment variable per role; keyring keeps the secrets in the credential store"
+	// descriptionHint names the one consequence that sets this field apart from everything else in the
+	// editor: what is typed here is published by discovery, so it is the one place where free text can
+	// carry a secret out of this machine.
+	descriptionHint = "optional; one line saying what this route is for. discovery publishes it, so it " +
+		"must never carry a secret or personal data"
 	secretHint = "s system keyring · p unencrypted file (asks first) · x remove; typing is masked"
 	// lockedHint is what the name of an existing entry says about itself. It replaces the hint that
 	// describes a free choice, which is the opposite of what this field does.
@@ -727,6 +732,9 @@ func (m *Model) buildFields(name string) []field {
 			choiceField("service", m.entryNames(sectionServices), conn.Service),
 			choiceField("credential", m.entryNames(sectionCredentials), conn.Credential),
 			textField("target", conn.Target, false),
+			// The description stands last: it explains the route the fields above it define, and it is the
+			// only field here whose text leaves this machine as published configuration.
+			textField("description", conn.Description, false).withHint(descriptionHint),
 		)
 		service := m.cfg.Services[fields[1].value()]
 		metadata, _ := m.cfg.ProviderMetadata(service.Provider)
@@ -809,9 +817,10 @@ func (m *Model) apply(cfg *config.Config, name string) error {
 		return cfg.SetCredential(name, cred)
 	case sectionConnections:
 		return cfg.SetConnection(name, config.Connection{
-			Service:    m.fieldValue("service"),
-			Credential: m.fieldValue("credential"),
-			Target:     m.fieldValue("target"),
+			Service:     m.fieldValue("service"),
+			Credential:  m.fieldValue("credential"),
+			Target:      m.fieldValue("target"),
+			Description: m.fieldValue("description"),
 		})
 	case sectionDefaults:
 		return cfg.SetDefault(name, m.fieldValue("connection"))

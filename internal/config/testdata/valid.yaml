@@ -37,6 +37,7 @@ connections:
     service: wiki-archive
     credential: wiki-reader
     target: books
+    description: read-only copy of the wiki, safe for bulk reads
 
 defaults:
   connections:

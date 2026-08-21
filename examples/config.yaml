@@ -136,21 +136,30 @@ credentials:
     type: keyring
 
 # A connection is what you select with --connection. It binds one service to one credential.
+#
+# description is optional and yours to maintain: one line of at most 200 characters saying what the route
+# is for. A name is a stable selector, not an explanation, so this is what tells two routes of the same
+# provider apart. It is published by 'callbell tool <tool-id>' and by callbell.describe, it is never sent
+# to a provider, and it never selects a route on its own. Because it is published, never write a secret or
+# personal data into it.
 connections:
   wiki:
     service: wiki-primary
     credential: wiki-reader
+    description: the live team wiki, everyone reads this one
 
   # The same service with a different key, for example a more restricted account.
   wiki-audit:
     service: wiki-primary
     credential: wiki-auditor
+    description: the same instance read with the restricted audit account
 
   # A different service reusing the same credential, optionally scoped with target.
   archive:
     service: wiki-archive
     credential: wiki-reader
     target: books
+    description: retired wiki content, read-only reference
 
   # Telegram requires a fixed non-secret target on every connection. Two connections can bind the same
   # bot to different chats without mixing their targets.
@@ -173,10 +182,12 @@ connections:
   crm:
     service: crm-cloud
     credential: crm-cloud-reader
+    description: the managed Twenty workspace used by sales
 
   crm-internal:
     service: crm-selfhosted
     credential: crm-selfhosted-reader
+    description: the self-hosted Twenty workspace for internal accounts
 
   # A SeaTable connection binds one instance, one base token, and one fixed table. The optional view
   # after the slash narrows the rows a list returns; id:TABLEID and id:VIEWID address them by

@@ -75,8 +75,8 @@ func runLexwareCLI(t *testing.T, reads *atomic.Int32, input string, args ...stri
 	return code, stdout.String(), stderr.String()
 }
 
-// The Lexware namespace publishes exactly the two read-only tools of the confirmed workflow, with the
-// connections that can run them and without contacting the provider.
+// The Lexware namespace publishes exactly the two read-only tools of the confirmed workflow, each with the
+// number of connections that can run it and without contacting the provider.
 func TestLexwareToolsAreDiscoverable(t *testing.T) {
 	path := lexwareConfig(t)
 	var reads atomic.Int32
@@ -86,8 +86,7 @@ func TestLexwareToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"id: lexware.invoices.get", "id: lexware.invoices.list", "effect: read",
-		"connections[2]: accounting,accounting-archive",
+		"tools[2]{connections,id}:", "2,lexware.invoices.get", "2,lexware.invoices.list",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)
@@ -128,7 +127,10 @@ func TestLexwareToolContractExposesOnlyControlledFilters(t *testing.T) {
 				Name string `json:"name"`
 			} `json:"arguments"`
 		} `json:"tool"`
-		Connections []string `json:"connections"`
+		Connections []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"connections"`
 	}
 	if err := json.Unmarshal(document, &described); err != nil {
 		t.Fatalf("tool document = %s: %v", document, err)

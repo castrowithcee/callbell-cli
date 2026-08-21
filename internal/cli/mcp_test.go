@@ -127,14 +127,28 @@ func TestMCPToolsUseApplicationCoreContracts(t *testing.T) {
 	if len(searchResult.Operations) != 2 {
 		t.Fatalf("search operations = %d, want 2", len(searchResult.Operations))
 	}
-	assertMCPParity(t, runFakeCLIJSON(t, "", "tools", "--query", "page", "--config", path, "--output", "json"), "tools",
-		search.Structured, "operations")
+	// callbell.search keeps the request-bound agent contract; the CLI index deliberately publishes less.
+	// What must agree is which tools they name, in which order.
+	indexed := toolSummaries(t, string(runFakeCLIJSON(t, "", "tools", "--query", "page", "--config", path,
+		"--output", "json")))
+	if len(indexed) != len(searchResult.Operations) {
+		t.Fatalf("index = %+v, want the %d searched operations", indexed, len(searchResult.Operations))
+	}
+	for i, tool := range indexed {
+		if tool.ID != searchResult.Operations[i].ID ||
+			tool.Connections != len(searchResult.Operations[i].Connections) {
+			t.Errorf("index[%d] = %+v, want %+v", i, tool, searchResult.Operations[i])
+		}
+	}
 
 	describe := toolResultFrom(t, responses[`"describe"`])
 	var described application.DescribeResponse
 	decodeRaw(t, describe.Structured, &described)
+	wantConnections := []application.ConnectionRef{
+		{Name: "wiki", Description: "read-only account on the team wiki"},
+	}
 	if describe.IsError || described.Operation.ID != "bookstack.pages.get" ||
-		!reflect.DeepEqual(described.Connections, []string{"wiki"}) {
+		!reflect.DeepEqual(described.Connections, wantConnections) {
 		t.Fatalf("describe = %+v, structured = %+v", describe, described)
 	}
 	describedByCLI := runFakeCLIJSON(t, "", "tool", "bookstack.pages.get", "--config", path, "--output", "json")
