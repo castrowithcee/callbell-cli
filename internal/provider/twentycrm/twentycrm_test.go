@@ -2,7 +2,6 @@ package twentycrm
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -21,6 +20,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
+	"github.com/castrowithcee/callbell-cli/internal/provider/ratelimit"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -90,8 +90,8 @@ func resolver(red *redact.Redactor) *secret.Resolver {
 }
 
 // freeLimiter is a limiter that never waits. The rate limit itself is proven by its own test.
-func freeLimiter() *limiter {
-	return newLimiter(0, time.Now, sleepFor)
+func freeLimiter() *ratelimit.Limiter {
+	return ratelimit.New(0, time.Now, ratelimit.Sleep)
 }
 
 // client opens the cloud connection with the package transport currently installed.
@@ -557,10 +557,10 @@ func TestWorkspacesKeepTheirOwnOriginKeyAndRateBudget(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Errorf("calls = %v, want each connection to use its own origin and key", calls)
 	}
-	if limiterFor(cloudKey) == limiterFor(internalKey) {
+	if limiters.For(cloudKey) == limiters.For(internalKey) {
 		t.Error("two API keys share one rate-limit budget")
 	}
-	if limiterFor(cloudKey) != limiterFor(cloudKey) {
+	if limiters.For(cloudKey) != limiters.For(cloudKey) {
 		t.Error("one API key does not keep one rate-limit budget")
 	}
 }
@@ -576,7 +576,7 @@ func TestRateLimitSpacesRequestsOfOneKey(t *testing.T) {
 		now    = time.Unix(0, 0)
 		waited []time.Duration
 	)
-	limited := newLimiter(minInterval,
+	limited := ratelimit.New(minInterval,
 		func() time.Time { mu.Lock(); defer mu.Unlock(); return now },
 		func(_ context.Context, d time.Duration) error {
 			mu.Lock()
@@ -608,8 +608,8 @@ func TestRateLimitSpacesRequestsOfOneKey(t *testing.T) {
 // A cancelled request never becomes a provider call while it waits for the rate limit.
 func TestRateLimitRespectsCancellation(t *testing.T) {
 	refuse(t)
-	limited := newLimiter(minInterval, time.Now, sleepFor)
-	limited.next = time.Now().Add(time.Hour)
+	limited := ratelimit.New(minInterval, time.Now, ratelimit.Sleep)
+	limited.HoldFor(time.Hour)
 
 	red := &redact.Redactor{}
 	c, err := open(resolvedConnection("crm", "crm-cloud-reader", cloudEnv, cloudOrigin), resolver(red), red, limited)
@@ -899,15 +899,7 @@ func coreConfig() *config.Config {
 // does not sleep. The spacing itself is proven by TestRateLimitSpacesRequestsOfOneKey.
 func stubLimiter(t *testing.T, key string) {
 	t.Helper()
-	digest := sha256.Sum256([]byte(key))
-	limitersMu.Lock()
-	limiters[digest] = freeLimiter()
-	limitersMu.Unlock()
-	t.Cleanup(func() {
-		limitersMu.Lock()
-		delete(limiters, digest)
-		limitersMu.Unlock()
-	})
+	t.Cleanup(limiters.Replace(key, freeLimiter()))
 }
 
 func classOf(err error) provider.Class {

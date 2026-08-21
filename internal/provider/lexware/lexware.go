@@ -9,7 +9,6 @@ package lexware
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -21,12 +20,12 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider"
+	"github.com/castrowithcee/callbell-cli/internal/provider/ratelimit"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -64,8 +63,11 @@ const (
 )
 
 // minInterval spaces requests that share one API key. Lexware allows two requests per second across all
-// of its endpoints.
+// of its endpoints, and counts them per key, so the spacing belongs to the key.
 const minInterval = 500 * time.Millisecond
+
+// limiters holds the rate-limit budget of every API key this process has used.
+var limiters = ratelimit.NewRegistry(minInterval)
 
 var lexwareReadRisk = capability.Risk{
 	Effect:          capability.EffectRead,
@@ -244,7 +246,7 @@ func invokeInvoicesGet(ctx context.Context, resolved *config.Resolved, secrets *
 type Client struct {
 	auth    string
 	http    *http.Client
-	limiter *limiter
+	limiter *ratelimit.Limiter
 }
 
 // Open resolves the API key of one selected connection and returns a client for the fixed gateway.
@@ -255,7 +257,7 @@ func Open(resolved *config.Resolved, secrets *secret.Resolver, red *redact.Redac
 // open is the internal seam. A caller may supply the rate limiter, and the package's own tests replace
 // the transport, so no test ever reaches a productive Lexware organization.
 func open(resolved *config.Resolved, secrets *secret.Resolver, red *redact.Redactor,
-	lim *limiter) (*Client, error) {
+	lim *ratelimit.Limiter) (*Client, error) {
 	if resolved == nil {
 		return nil, providerError("open", "no connection was selected")
 	}
@@ -277,7 +279,7 @@ func open(resolved *config.Resolved, secrets *secret.Resolver, red *redact.Redac
 		red.Add(value.Secret, "Bearer "+value.Secret)
 	}
 	if lim == nil {
-		lim = limiterFor(value.Secret)
+		lim = limiters.For(value.Secret)
 	}
 	return &Client{auth: "Bearer " + value.Secret, http: newHTTPClient(), limiter: lim}, nil
 }
@@ -649,7 +651,7 @@ type invoiceJSON struct {
 
 // get performs one bounded read against the fixed gateway and decodes the response into out.
 func (c *Client) get(ctx context.Context, op, path string, query url.Values, out any) error {
-	if err := c.limiter.wait(ctx); err != nil {
+	if err := c.limiter.Wait(ctx); err != nil {
 		return &provider.Error{
 			Class: provider.ClassTimeout, Op: op,
 			Message: "the request ended while it waited for the Lexware rate limit",
@@ -790,68 +792,4 @@ func validUUID(value string) bool {
 		}
 	}
 	return true
-}
-
-// limiter spaces the requests that share one API key. Lexware counts its limit per key across all of its
-// endpoints, so the spacing belongs to the key and not to a single client or operation.
-type limiter struct {
-	mu       sync.Mutex
-	interval time.Duration
-	next     time.Time
-	now      func() time.Time
-	sleep    func(context.Context, time.Duration) error
-}
-
-// wait reserves the next slot and blocks until it is due.
-func (l *limiter) wait(ctx context.Context) error {
-	l.mu.Lock()
-	now := l.now()
-	wait := l.next.Sub(now)
-	if wait < 0 {
-		wait = 0
-	}
-	l.next = now.Add(wait + l.interval)
-	l.mu.Unlock()
-
-	if wait <= 0 {
-		return ctx.Err()
-	}
-	return l.sleep(ctx, wait)
-}
-
-// callbell-dev: the limiter is per key and per process. A shared bucket across concurrent Callbell
-// processes would need external state; add it when one machine really runs several at once.
-var (
-	limitersMu sync.Mutex
-	limiters   = map[[sha256.Size]byte]*limiter{}
-)
-
-// limiterFor returns the limiter of one API key. The map is keyed by a digest, so it never holds a second
-// copy of the key itself.
-func limiterFor(key string) *limiter {
-	digest := sha256.Sum256([]byte(key))
-	limitersMu.Lock()
-	defer limitersMu.Unlock()
-	if existing, ok := limiters[digest]; ok {
-		return existing
-	}
-	created := newLimiter(minInterval, time.Now, sleepFor)
-	limiters[digest] = created
-	return created
-}
-
-func newLimiter(interval time.Duration, now func() time.Time,
-	sleep func(context.Context, time.Duration) error) *limiter {
-	return &limiter{interval: interval, now: now, sleep: sleep}
-}
-
-func sleepFor(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
