@@ -211,6 +211,10 @@ func addConnection(t *testing.T, m *Model, name, service, credential string) {
 	openSectionByName(t, m, sectionConnections)
 	press(t, m, "n")
 	typeText(t, m, name)
+	// The provider row stands between the name and the service; it narrows both rows below it, and the
+	// service the caller asks for names the provider it belongs to.
+	press(t, m, "tab")
+	selectChoice(t, m, m.cfg.Services[service].Provider)
 	press(t, m, "tab")
 	selectChoice(t, m, service)
 	press(t, m, "tab")

@@ -41,7 +41,9 @@ A credential accepts an optional `provider`. Secret roles are provider-defined, 
 BookStack token pair apart from a Telegram bot token: the editor then asks for exactly those roles, and a
 role the named provider does not define is refused instead of resolving to nothing.
 
-A credential that names none is not lost: while a connection binds it to a service, that service names the
+A connection must not cross that line: its service and its credential have to belong to the same provider,
+and the editor offers only what fits the provider chosen for the route. A credential that names none is
+not lost: while a connection binds it to a service, that service names the
 provider, and the editor uses it. Only a credential no connection uses, or one two providers disagree
 about, falls back to offering every compiled role.
 

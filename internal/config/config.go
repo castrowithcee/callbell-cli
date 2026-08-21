@@ -319,6 +319,13 @@ func (c *Config) Validate() error {
 		if !credOK {
 			report("connections.%s.credential: unknown credential %q", name, conn.Credential)
 		}
+		// A credential that names another provider than the service cannot serve this route: its secret
+		// roles are the other provider's. Saying so here keeps the mismatch out of the first call, where
+		// it would look like a rejected token.
+		if ok && credOK && cred.Provider != "" && cred.Provider != service.Provider {
+			report("connections.%s: service %q belongs to provider %q, credential %q to %q",
+				name, conn.Service, service.Provider, conn.Credential, cred.Provider)
+		}
 		// Only an env credential can be incomplete in the file. A keyring credential names no roles
 		// here; which ones it must supply follows from the provider, and whether they are supplied is a
 		// question about the credential store, not about this file.

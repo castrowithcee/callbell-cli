@@ -149,17 +149,23 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 		Service: "cloud-partner", Credential: "partner-reader", Target: "Shared/Callbell",
 	}
 	m.section = sectionConnections
+	// The connection form leads with the provider row, so the target is the fifth field.
 	connectionFields := m.buildFields("alerts")
-	if connectionFields[3].value() != "-1001" || !strings.Contains(connectionFields[3].hint, "required for Telegram") {
-		t.Fatalf("target field = value %q, hint %q", connectionFields[3].value(), connectionFields[3].hint)
+	if connectionFields[0].label != "name" || connectionFields[1].label != providerLabel ||
+		connectionFields[4].label != "target" {
+		t.Fatalf("connection fields = %v, want name, provider, service, credential, target",
+			labelsOf(connectionFields))
+	}
+	if connectionFields[4].value() != "-1001" || !strings.Contains(connectionFields[4].hint, "required for Telegram") {
+		t.Fatalf("target field = value %q, hint %q", connectionFields[4].value(), connectionFields[4].hint)
 	}
 	if got := m.dashboardEntry(sectionConnections, "operations"); !strings.Contains(got, "-1002") {
 		t.Fatalf("dashboard entry = %q, want distinct target", got)
 	}
 	lexwareFields := m.buildFields("books-primary")
-	if strings.Contains(lexwareFields[3].hint, "required") ||
-		!strings.Contains(lexwareFields[3].hint, "not used by Lexware") {
-		t.Fatalf("Lexware target hint = %q, want an optional target", lexwareFields[3].hint)
+	if strings.Contains(lexwareFields[4].hint, "required") ||
+		!strings.Contains(lexwareFields[4].hint, "not used by Lexware") {
+		t.Fatalf("Lexware target hint = %q, want an optional target", lexwareFields[4].hint)
 	}
 	for _, name := range []string{"books-primary", "books-audit"} {
 		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, name+" · lexware-main + accounting") {
@@ -175,9 +181,9 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	// Two Twenty workspaces stay two visibly separate connections, each with its own origin and key, and
 	// neither needs a target.
 	twentyFields := m.buildFields("crm")
-	if strings.Contains(twentyFields[3].hint, "required") ||
-		!strings.Contains(twentyFields[3].hint, "not used by Twenty CRM") {
-		t.Fatalf("Twenty target hint = %q, want an optional target", twentyFields[3].hint)
+	if strings.Contains(twentyFields[4].hint, "required") ||
+		!strings.Contains(twentyFields[4].hint, "not used by Twenty CRM") {
+		t.Fatalf("Twenty target hint = %q, want an optional target", twentyFields[4].hint)
 	}
 	for name, want := range map[string]string{
 		"crm":          "crm · crm-cloud + crm-cloud-reader",
@@ -192,11 +198,11 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	// table is required, the view is the optional part after the slash, and two tokens of the same base
 	// stay two visibly separate connections.
 	seatableFields := m.buildFields("sales-rows")
-	if seatableFields[3].value() != "Kunden" ||
-		!strings.Contains(seatableFields[3].hint, "required for SeaTable") ||
-		!strings.Contains(seatableFields[3].hint, "TABLE/VIEW") {
+	if seatableFields[4].value() != "Kunden" ||
+		!strings.Contains(seatableFields[4].hint, "required for SeaTable") ||
+		!strings.Contains(seatableFields[4].hint, "TABLE/VIEW") {
 		t.Fatalf("SeaTable target field = value %q, hint %q",
-			seatableFields[3].value(), seatableFields[3].hint)
+			seatableFields[4].value(), seatableFields[4].hint)
 	}
 	for name, want := range map[string]string{
 		"sales-rows":       "sales-rows · tables-cloud + sales-base-reader",
@@ -215,11 +221,11 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	// the Files of that identity. The root folder is required, and two identities of the same instance
 	// stay two visibly separate connections.
 	nextcloudFields := m.buildFields("files-reports")
-	if nextcloudFields[3].value() != "Reports" ||
-		!strings.Contains(nextcloudFields[3].hint, "required for Nextcloud") ||
-		!strings.Contains(nextcloudFields[3].hint, "Files of this identity") {
+	if nextcloudFields[4].value() != "Reports" ||
+		!strings.Contains(nextcloudFields[4].hint, "required for Nextcloud") ||
+		!strings.Contains(nextcloudFields[4].hint, "Files of this identity") {
 		t.Fatalf("Nextcloud target field = value %q, hint %q",
-			nextcloudFields[3].value(), nextcloudFields[3].hint)
+			nextcloudFields[4].value(), nextcloudFields[4].hint)
 	}
 	for name, want := range map[string]string{
 		"files-reports": "files-reports · cloud-main + cloud-reader",
@@ -378,4 +384,61 @@ func indexOf(t *testing.T, choices []string, want string) int {
 	}
 	t.Fatalf("%q is not among %v", want, choices)
 	return 0
+}
+
+// The connection form leads with the provider, and the two rows below it offer only what belongs to that
+// provider. Choosing across systems is not a mistake the editor lets you make.
+func TestTheConnectionFormOffersOneProviderAtATime(t *testing.T) {
+	reg := capability.NewRegistry()
+	for _, register := range []func(*capability.Registry) error{bookstack.Register, telegram.Register} {
+		if err := register(reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := config.NewStore(filepath.Join(t.TempDir(), "config.yaml"), reg)
+	m, err := New(store, nil, nil, &redact.Redactor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Services["wiki"] = config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}
+	m.cfg.Services["notifications"] = config.Service{Provider: "telegram", BaseURL: "https://api.telegram.org"}
+	m.cfg.Credentials["wiki-reader"] = config.Credential{
+		Provider: "bookstack", Type: config.CredentialTypeKeyring,
+	}
+	m.cfg.Credentials["bot"] = config.Credential{Provider: "telegram", Type: config.CredentialTypeKeyring}
+	// A credential nothing places yet stays selectable everywhere: this form is where it gets settled.
+	m.cfg.Credentials["fresh"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.section = sectionConnections
+	m.screen = screenForm
+	m.fields = m.buildFields("")
+
+	if got := m.field("service").choices; !reflect.DeepEqual(got, []string{"wiki"}) {
+		t.Errorf("services = %v, want only the BookStack service", got)
+	}
+	if got := m.field("credential").choices; !reflect.DeepEqual(got, []string{"fresh", "wiki-reader"}) {
+		t.Errorf("credentials = %v, want the BookStack one and the unplaced one", got)
+	}
+
+	m.fields[1].index = indexOf(t, m.fields[1].choices, "telegram")
+	m.connectionProviderChosen()
+	if got := m.field("service").choices; !reflect.DeepEqual(got, []string{"notifications"}) {
+		t.Errorf("services after the switch = %v, want only the Telegram service", got)
+	}
+	if got := m.field("credential").choices; !reflect.DeepEqual(got, []string{"bot", "fresh"}) {
+		t.Errorf("credentials after the switch = %v, want the Telegram one and the unplaced one", got)
+	}
+	if got := m.fieldValue("service"); got != "notifications" {
+		t.Errorf("service = %q, want the first of the new choices", got)
+	}
+	// The target hint follows the provider, because it is the provider that says what a target is.
+	if hint := m.field("target").hint; !strings.Contains(hint, "required for Telegram") {
+		t.Errorf("target hint = %q, want the Telegram rule", hint)
+	}
+
+	// Editing an existing connection starts at the provider its service already names.
+	m.cfg.Connections["alerts"] = config.Connection{Service: "notifications", Credential: "bot"}
+	fields := m.buildFields("alerts")
+	if got := fields[1].value(); got != "telegram" {
+		t.Errorf("provider of an existing connection = %q, want telegram", got)
+	}
 }

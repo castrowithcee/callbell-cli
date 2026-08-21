@@ -673,3 +673,21 @@ func TestCredentialProviderIsOptionalAndChecked(t *testing.T) {
 		}
 	})
 }
+
+// A connection whose credential belongs to another provider cannot work: the secret roles it holds are
+// the other provider's. The file says so instead of letting the first call look like a rejected token.
+func TestAConnectionMustNotMixProviders(t *testing.T) {
+	mixed := strings.Replace(minimal, "  reader:\n", "  reader:\n    provider: telegram\n", 1)
+	mixed = strings.Replace(mixed, "      token-id: WIKI_TOKEN_ID\n      token-secret: WIKI_TOKEN_SECRET\n",
+		"      bot-token: WIKI_BOT_TOKEN\n", 1)
+	_, err := Decode(strings.NewReader(mixed), testProviders)
+	if err == nil || !strings.Contains(err.Error(),
+		`connections.wiki: service "wiki" belongs to provider "bookstack", credential "reader" to "telegram"`) {
+		t.Errorf("Decode() = %v, want it to name both sides of the mismatch", err)
+	}
+
+	// A credential that names no provider is not a mismatch: nothing places it anywhere yet.
+	if _, err := Decode(strings.NewReader(minimal), testProviders); err != nil {
+		t.Errorf("Decode() = %v, want a credential without a provider to stay valid", err)
+	}
+}

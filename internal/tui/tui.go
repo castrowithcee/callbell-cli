@@ -106,6 +106,10 @@ const (
 	// credentialProviderHint names the one thing this choice decides, because it is not obvious from the
 	// field itself: the rows below it are the secret roles of the provider selected here.
 	credentialProviderHint = "the system these secrets belong to; it decides which secret roles are asked for below"
+	// connectionProviderHint says why this row exists at all: it is not stored, it decides what the rows
+	// below may offer.
+	connectionProviderHint = "the system this route leads to; it decides which services and credentials " +
+		"can be chosen below"
 	// descriptionHint names the one consequence that sets this field apart from everything else in the
 	// editor: what is typed here is published by discovery, so it is the one place where free text can
 	// carry a secret out of this machine.
@@ -478,10 +482,14 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 			return m.credentialTypeChosen()
 		}
 		if current.label == providerLabel {
-			if m.section == sectionCredentials {
+			switch m.section {
+			case sectionCredentials:
 				return m.credentialProviderChosen()
+			case sectionConnections:
+				m.connectionProviderChosen()
+			default:
+				m.providerChosen(previous)
 			}
-			m.providerChosen(previous)
 		}
 		if current.label == "service" {
 			m.targetChosen()
@@ -511,16 +519,94 @@ func (m *Model) providerChosen(previous string) {
 	}
 }
 
-func (m *Model) targetChosen() {
-	target := m.field("target")
-	if target == nil {
+// connectionProviders are the providers a connection can actually be built for: those with at least one
+// service. Offering a provider without one would lead to a form whose service row is empty.
+func (m *Model) connectionProviders() []string {
+	seen := map[string]bool{}
+	var providers []string
+	for _, name := range m.entryNames(sectionServices) {
+		if provider := m.cfg.Services[name].Provider; provider != "" && !seen[provider] {
+			seen[provider] = true
+			providers = append(providers, provider)
+		}
+	}
+	sort.Strings(providers)
+	return providers
+}
+
+func (m *Model) firstProviderWithService() string {
+	if providers := m.connectionProviders(); len(providers) > 0 {
+		return providers[0]
+	}
+	return ""
+}
+
+// providerServices are the services of one provider, in list order.
+func (m *Model) providerServices(provider string) []string {
+	var names []string
+	for _, name := range m.entryNames(sectionServices) {
+		if m.cfg.Services[name].Provider == provider {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// providerCredentials are the credentials that can serve one provider: those that belong to it, and those
+// whose provider is still open. A credential just created has no connection yet, so nothing places it
+// anywhere; keeping it selectable is what lets this form be the place that settles it.
+func (m *Model) providerCredentials(provider string) []string {
+	var names []string
+	for _, name := range m.entryNames(sectionCredentials) {
+		switch belongs := m.credentialProvider(name, m.cfg.Credentials[name]); belongs {
+		case provider, "":
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// targetHint says what the target of one service means, in that provider's own words.
+func (m *Model) targetHint(service string) string {
+	metadata, _ := m.cfg.ProviderMetadata(m.cfg.Services[service].Provider)
+	hint := metadata.Target.Description
+	if metadata.Target.Required {
+		hint += "; required for " + metadata.Name
+	}
+	return hint
+}
+
+// connectionProviderChosen narrows the service and credential rows to the provider now selected. A route
+// that binds a BookStack service to a Telegram credential cannot work, so it is not offered here.
+func (m *Model) connectionProviderChosen() {
+	provider := m.fieldValue(providerLabel)
+	m.replaceChoices("service", m.providerServices(provider))
+	m.replaceChoices("credential", m.providerCredentials(provider))
+	if target := m.field("target"); target != nil {
+		target.hint = m.targetHint(m.fieldValue("service"))
+	}
+}
+
+// replaceChoices puts a new set of options on one choice row, keeping the current value when it is still
+// among them and falling back to the first otherwise.
+func (m *Model) replaceChoices(label string, choices []string) {
+	f := m.field(label)
+	if f == nil {
 		return
 	}
-	service := m.cfg.Services[m.fieldValue("service")]
-	metadata, _ := m.cfg.ProviderMetadata(service.Provider)
-	target.hint = metadata.Target.Description
-	if metadata.Target.Required {
-		target.hint += "; required for " + metadata.Name
+	current := f.value()
+	f.choices = choices
+	f.index = 0
+	for i, choice := range choices {
+		if choice == current {
+			f.index = i
+		}
+	}
+}
+
+func (m *Model) targetChosen() {
+	if target := m.field("target"); target != nil {
+		target.hint = m.targetHint(m.fieldValue("service"))
 	}
 }
 
@@ -861,20 +947,23 @@ func (m *Model) buildFields(name string) []field {
 		fields = append(fields, m.roleFields(cred, fields[1].value(), credType)...)
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
+		// The provider is not stored on a connection: its service already names one. It stands here
+		// because it decides what the two rows below may offer, and a route that mixes two systems is a
+		// route that cannot work.
+		provider := m.cfg.Services[conn.Service].Provider
+		if provider == "" {
+			provider = m.firstProviderWithService()
+		}
 		fields = append(fields,
-			choiceField("service", m.entryNames(sectionServices), conn.Service),
-			choiceField("credential", m.entryNames(sectionCredentials), conn.Credential),
+			choiceField(providerLabel, m.connectionProviders(), provider).withHint(connectionProviderHint),
+			choiceField("service", m.providerServices(provider), conn.Service),
+			choiceField("credential", m.providerCredentials(provider), conn.Credential),
 			textField("target", conn.Target, false),
 			// The description stands last: it explains the route the fields above it define, and it is the
 			// only field here whose text leaves this machine as published configuration.
 			textField("description", conn.Description, false).withHint(descriptionHint),
 		)
-		service := m.cfg.Services[fields[1].value()]
-		metadata, _ := m.cfg.ProviderMetadata(service.Provider)
-		fields[3].hint = metadata.Target.Description
-		if metadata.Target.Required {
-			fields[3].hint += "; required for " + metadata.Name
-		}
+		fields[4].hint = m.targetHint(fields[2].value())
 	case sectionDefaults:
 		fields = append(fields,
 			choiceField("connection", m.entryNames(sectionConnections), m.cfg.Defaults.Connections[name]),
