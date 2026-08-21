@@ -40,7 +40,7 @@ func newUpdateCommand(opts *Options, buildVersion string) *cobra.Command {
 				}
 				return err
 			}
-			return emitComplete(c, opts, output.Object{Fields: []output.Field{
+			return emit(c, opts, output.Object{Fields: []output.Field{
 				{Name: "current", Value: result.Current},
 				{Name: "latest", Value: result.Latest},
 				{Name: "update_available", Value: result.UpdateAvailable},

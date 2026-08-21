@@ -36,8 +36,6 @@ type Options struct {
 	Connection string
 	Agent      bool
 	Output     string
-	Fields     []string
-	Limit      int
 	Input      io.Reader
 	Updater    *selfupdate.Client
 
@@ -159,8 +157,6 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	f.BoolVar(&opts.Agent, "agent", false, "agent mode: machine-readable output without prose or color")
 	f.StringVar(&opts.Output, "output", string(output.FormatTable),
 		"output format: table, json, compact, or toon; tools and tool default to toon")
-	f.StringSliceVar(&opts.Fields, "fields", nil, "restrict the output to these fields, in this order")
-	f.IntVar(&opts.Limit, "limit", output.DefaultLimit, "maximum number of records; 0 means no limit")
 
 	cmd.AddCommand(
 		newConfigCommand(opts, reg),
@@ -206,26 +202,11 @@ func resolveFormat(c *cobra.Command, opts *Options) error {
 	return nil
 }
 
-// emit projects, limits, and encodes a result to stdout. Only payload data reaches stdout.
+// emit redacts and encodes a result to stdout. Only payload data reaches stdout. A command that offers a
+// field selection projects before it emits; nothing here shortens a result, so a report never drops rows
+// the caller believes it saw.
 func emit(c *cobra.Command, opts *Options, result output.Result) error {
-	projected, err := output.Project(result, opts.Fields)
-	if err != nil {
-		return classifyUserError(err)
-	}
-	return output.Encode(c.OutOrStdout(), opts.Format, redactResult(opts.Redactor,
-		output.Limit(projected, opts.Limit)))
-}
-
-// emitComplete is emit for a result that must never be cut short. --limit caps how many records a listing
-// returns, which is a sensible default for data from a provider and a wrong one for a report about the
-// user's own configuration: a check that silently drops rows reads as an all-clear for the rows it never
-// showed. Projection and format still apply, so the output contract is unchanged.
-func emitComplete(c *cobra.Command, opts *Options, result output.Result) error {
-	projected, err := output.Project(result, opts.Fields)
-	if err != nil {
-		return classifyUserError(err)
-	}
-	return output.Encode(c.OutOrStdout(), opts.Format, redactResult(opts.Redactor, projected))
+	return output.Encode(c.OutOrStdout(), opts.Format, redactResult(opts.Redactor, result))
 }
 
 // redactResult removes known secrets from string values before an encoder escapes or serializes them.

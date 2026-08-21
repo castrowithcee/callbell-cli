@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,7 +20,10 @@ func newConfigCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 		RunE:  func(c *cobra.Command, _ []string) error { return c.Help() },
 	}
 
-	var secrets bool
+	var (
+		secrets bool
+		fields  []string
+	)
 	validate := &cobra.Command{
 		Use:   "validate",
 		Short: "Check that the configuration file is complete and consistent",
@@ -31,7 +33,7 @@ func newConfigCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 			"source delivers each of them, so an environment variable that overrides the credential store\n" +
 			"is visible instead of silent. It prints where a secret comes from, never what it is, and it\n" +
 			"may ask the credential store to unlock, which is why it is not the default. The report always\n" +
-			"covers every connection: --limit does not apply to it.",
+			"covers every connection; --fields restricts which columns it shows, in the order given.",
 		Args: noArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
 			path, err := config.Path(opts.Config)
@@ -45,21 +47,21 @@ func newConfigCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 			if !secrets {
 				return nil
 			}
-			// The report covers every connection. Accepting a limit and then ignoring it would be a
-			// trap, so a limit the user set themselves is refused instead of silently dropped.
-			if c.Flags().Changed("limit") {
-				return &UsageError{errors.New("--limit does not apply to config validate --secrets: " +
-					"the report always covers every connection")}
-			}
 			result, err := secretSources(cfg, opts)
 			if err != nil {
 				return err
 			}
-			return emitComplete(c, opts, result)
+			projected, err := output.Project(result, fields)
+			if err != nil {
+				return classifyUserError(err)
+			}
+			return emit(c, opts, projected)
 		},
 	}
 	validate.Flags().BoolVar(&secrets, "secrets", false,
 		"also report which source delivers each secret, without showing any value")
+	validate.Flags().StringSliceVar(&fields, "fields", nil,
+		"restrict the report to these fields, in this order")
 
 	cmd.AddCommand(validate)
 	return cmd

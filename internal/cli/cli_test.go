@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -34,7 +33,7 @@ func TestRun(t *testing.T) {
 			args:     []string{"--help"},
 			wantCode: exitOK,
 			wantInStdout: []string{
-				"--config", "--connection", "--agent", "--output", "--fields", "--limit", "--version", "update",
+				"--config", "--connection", "--agent", "--output", "--version", "update",
 			},
 		},
 		{
@@ -95,6 +94,38 @@ func TestRun(t *testing.T) {
 				t.Errorf("stderr non-empty = %v, want %v (stderr: %s)", got, tt.wantStderr, stderr.String())
 			}
 		})
+	}
+}
+
+// A global flag must not promise a projection or a page size the commands no longer apply. --fields now
+// belongs to config validate, and --limit is gone; both must be rejected everywhere else.
+func TestRemovedGlobalFlagsAreGone(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"--help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr.String())
+	}
+	for _, flag := range []string{"--fields", "--limit"} {
+		if strings.Contains(stdout.String(), flag) {
+			t.Errorf("the root help still offers %s:\n%s", flag, stdout.String())
+		}
+	}
+
+	for _, args := range [][]string{
+		{"tools", "--limit", "1"},
+		{"tools", "--fields", "id"},
+		{"tool", "bookstack.pages.list", "--limit", "1"},
+		{"invoke", "bookstack.pages.list", "--limit", "1"},
+	} {
+		var stdout, stderr bytes.Buffer
+
+		code := Run(args, &stdout, &stderr)
+
+		if code != exitUsage {
+			t.Errorf("%v: exit code = %d, want %d (stderr: %s)", args, code, exitUsage, stderr.String())
+		}
+		if stdout.String() != "" {
+			t.Errorf("%v: stdout = %q, want empty", args, stdout.String())
+		}
 	}
 }
 
@@ -169,7 +200,7 @@ func TestRunWritesUsageBeforeCarriedAudit(t *testing.T) {
 func TestOptionsAreParsed(t *testing.T) {
 	opts := &Options{}
 	cmd := newRootCommand(opts, defaultRegistry())
-	cmd.SetArgs([]string{"--config", "/tmp/c.yaml", "--connection", "wiki", "--agent", "--output", "compact", "--fields", "id,name", "--limit", "5"})
+	cmd.SetArgs([]string{"--config", "/tmp/c.yaml", "--connection", "wiki", "--agent", "--output", "compact"})
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 
@@ -179,12 +210,6 @@ func TestOptionsAreParsed(t *testing.T) {
 
 	if opts.Config != "/tmp/c.yaml" || opts.Connection != "wiki" || !opts.Agent || opts.Output != "compact" {
 		t.Errorf("options = %+v", *opts)
-	}
-	if !reflect.DeepEqual(opts.Fields, []string{"id", "name"}) {
-		t.Errorf("fields = %v, want [id name]", opts.Fields)
-	}
-	if opts.Limit != 5 {
-		t.Errorf("limit = %d, want 5", opts.Limit)
 	}
 }
 
@@ -206,17 +231,11 @@ func TestEmitRedactsBeforeEncoding(t *testing.T) {
 			cmd.SetOut(&stdout)
 			redactor := &redact.Redactor{}
 			redactor.Add(canary)
-			opts := &Options{
-				Format:   tt.format,
-				Fields:   []string{"id", "name"},
-				Limit:    1,
-				Redactor: redactor,
-			}
+			opts := &Options{Format: tt.format, Redactor: redactor}
 			result := output.Collection{
-				Columns: []string{"name", "id", "active"},
+				Columns: []string{"id", "name"},
 				Rows: []output.Row{
-					{"name": "before " + canary + " after", "id": int64(7), "active": true},
-					{"name": canary, "id": int64(8), "active": false},
+					{"name": "before " + canary + " after", "id": int64(7)},
 				},
 			}
 
@@ -242,7 +261,8 @@ func TestEmitRedactsBeforeEncoding(t *testing.T) {
 	}
 }
 
-func TestEmitCompleteRedactsWithoutApplyingLimit(t *testing.T) {
+// Nothing shortens a result on its way out, and the caller's own value stays untouched.
+func TestEmitKeepsEveryRowAndTheInput(t *testing.T) {
 	const canary = "complete-canary-8a14"
 
 	var stdout bytes.Buffer
@@ -258,8 +278,8 @@ func TestEmitCompleteRedactsWithoutApplyingLimit(t *testing.T) {
 		},
 	}
 
-	if err := emitComplete(cmd, &Options{Format: output.FormatCompact, Limit: 1, Redactor: redactor}, result); err != nil {
-		t.Fatalf("emitComplete() = %v", err)
+	if err := emit(cmd, &Options{Format: output.FormatCompact, Redactor: redactor}, result); err != nil {
+		t.Fatalf("emit() = %v", err)
 	}
 	if got, want := stdout.String(), "name|count\n[redacted]|1\n[redacted]|2\n"; got != want {
 		t.Errorf("stdout = %q, want %q", got, want)

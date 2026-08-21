@@ -721,13 +721,27 @@ defaults:
 	}
 }
 
-// A limit the user set themselves is refused rather than accepted and ignored.
-func TestConfigValidateSecretsRejectsAnExplicitLimit(t *testing.T) {
+// The report always covers every connection. --fields belongs to this command and narrows only the
+// columns; a global --limit no longer exists, so a caller cannot believe it shortened the report.
+func TestConfigValidateSecretsProjectsWithoutShortening(t *testing.T) {
 	dir := keyringFixture(t)
 	opts := testOptionsIn(t, dir, secret.NewMemoryStore())
 
-	code, stdout, stderr := runWithInput(t, opts, "",
-		"config", "validate", "--secrets", "--limit", "10", "--config", configIn(dir))
+	code, stdout, stderr := runWithInput(t, opts, "", "config", "validate", "--secrets", "--agent",
+		"--fields", "role,source", "--config", configIn(dir))
+
+	if code != exitOK {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitOK, stderr)
+	}
+	if header, _, _ := strings.Cut(stdout, "\n"); header != "role|source" {
+		t.Errorf("header = %q, want %q", header, "role|source")
+	}
+	if rows := strings.Count(strings.TrimSuffix(stdout, "\n"), "\n"); rows == 0 {
+		t.Errorf("stdout = %q, want the report to keep its rows", stdout)
+	}
+
+	code, stdout, stderr = runWithInput(t, opts, "", "config", "validate", "--secrets",
+		"--limit", "10", "--config", configIn(dir))
 
 	if code != exitUsage {
 		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitUsage, stderr)
@@ -735,13 +749,7 @@ func TestConfigValidateSecretsRejectsAnExplicitLimit(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty", stdout)
 	}
-	if !strings.Contains(stderr, "--limit does not apply") {
-		t.Errorf("stderr = %q, want the refusal to name the flag", stderr)
-	}
-
-	// The default limit stays without effect, so the ordinary call is unaffected.
-	if code, _, stderr := runWithInput(t, opts, "",
-		"config", "validate", "--secrets", "--agent", "--config", configIn(dir)); code != exitOK {
-		t.Errorf("plain call: exit %d (stderr %q)", code, stderr)
+	if !strings.Contains(stderr, "unknown flag: --limit") {
+		t.Errorf("stderr = %q, want it to name the unknown flag", stderr)
 	}
 }

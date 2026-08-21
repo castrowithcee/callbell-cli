@@ -1,6 +1,6 @@
-// Package output turns typed core results into the three output formats, applies projection and limits,
-// and defines the provider-independent error codes. Encoders never reach into providers: they only render
-// what the core produced.
+// Package output turns typed core results into the output formats, applies projection, and defines the
+// provider-independent error codes. Encoders never reach into providers: they only render what the core
+// produced.
 package output
 
 import (
@@ -19,9 +19,6 @@ const (
 	FormatCompact Format = "compact"
 	FormatTOON    Format = "toon"
 )
-
-// DefaultLimit caps a collection when the caller asks for no specific limit. Zero means no limit.
-const DefaultLimit = 50
 
 // ParseFormat validates a format name.
 func ParseFormat(s string) (Format, error) {
@@ -121,16 +118,6 @@ func Project(result Result, fields []string) (Result, error) {
 		return Object{Fields: out}, nil
 	}
 	return result, nil
-}
-
-// Limit truncates a collection to at most n rows. A limit of zero or less keeps everything. Objects pass
-// through unchanged.
-func Limit(result Result, n int) Result {
-	c, ok := result.(Collection)
-	if !ok || n <= 0 || len(c.Rows) <= n {
-		return result
-	}
-	return Collection{Columns: c.Columns, Rows: c.Rows[:n]}
 }
 
 // Code is a provider-independent error class. Agents branch on it instead of parsing messages.

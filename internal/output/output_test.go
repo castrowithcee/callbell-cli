@@ -391,36 +391,6 @@ func TestProject(t *testing.T) {
 	})
 }
 
-func TestLimit(t *testing.T) {
-	tests := []struct {
-		name string
-		n    int
-		want int
-	}{
-		{"below the row count", 2, 2},
-		{"exactly the row count", 3, 3},
-		{"above the row count", 10, 3},
-		{"zero means no limit", 0, 3},
-		{"negative means no limit", -1, 3},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := Limit(fixtureCollection, tt.n).(Collection)
-
-			if len(got.Rows) != tt.want {
-				t.Errorf("rows = %d, want %d", len(got.Rows), tt.want)
-			}
-		})
-	}
-
-	t.Run("objects pass through", func(t *testing.T) {
-		if got := Limit(fixtureObject, 1); !reflect.DeepEqual(got, fixtureObject) {
-			t.Error("the object changed")
-		}
-	})
-}
-
 func TestEncodeRejectsUnknownFormat(t *testing.T) {
 	if err := Encode(new(bytes.Buffer), Format("yaml"), fixtureObject); err == nil {
 		t.Error("Encode() = nil, want an error")
