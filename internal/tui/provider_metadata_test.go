@@ -281,7 +281,8 @@ func TestCredentialProviderDecidesItsSecretRoles(t *testing.T) {
 		})
 	}
 
-	// Switching the provider inside the form replaces the rows without leaving the form or the entry.
+	// Switching the provider replaces the role rows and nothing else. Dropping the type row was what let
+	// a saved credential come back with no type at all.
 	m.cfg.Credentials["notifier"] = config.Credential{
 		Provider: "bookstack", Type: config.CredentialTypeEnv,
 	}
@@ -297,6 +298,75 @@ func TestCredentialProviderDecidesItsSecretRoles(t *testing.T) {
 	if m.focus >= len(m.fields) {
 		t.Errorf("focus = %d, want a field that still exists among %d", m.focus, len(m.fields))
 	}
+	for _, label := range []string{"name", providerLabel, typeLabel} {
+		if m.field(label) == nil {
+			t.Errorf("the switch dropped the %q row: %v", label, labelsOf(m.fields))
+		}
+	}
+	if got := m.credentialType(); got != config.CredentialTypeEnv {
+		t.Errorf("type after the switch = %q, want the env it was edited as", got)
+	}
+}
+
+// A credential that names no provider still belongs to one as soon as a connection binds it to a service:
+// the configuration already says which, so the editor asks for that provider's roles instead of every
+// role it knows. Two providers disagreeing, or no connection at all, leaves the question open.
+func TestAConnectionSettlesTheProviderOfACredential(t *testing.T) {
+	reg := capability.NewRegistry()
+	for _, register := range []func(*capability.Registry) error{bookstack.Register, telegram.Register} {
+		if err := register(reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := config.NewStore(filepath.Join(t.TempDir(), "config.yaml"), reg)
+	m, err := New(store, nil, nil, &redact.Redactor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Services["wiki"] = config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}
+	m.cfg.Services["bot"] = config.Service{Provider: "telegram", BaseURL: "https://api.telegram.org"}
+	m.cfg.Credentials["personal"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.section = sectionCredentials
+
+	if got := m.credentialProvider("personal", m.cfg.Credentials["personal"]); got != "" {
+		t.Errorf("provider of an unused credential = %q, want none", got)
+	}
+
+	m.cfg.Connections["wiki-personal"] = config.Connection{Service: "wiki", Credential: "personal"}
+	if got := m.credentialProvider("personal", m.cfg.Credentials["personal"]); got != "bookstack" {
+		t.Errorf("derived provider = %q, want bookstack", got)
+	}
+	fields := m.buildFields("personal")
+	if got := fields[1].value(); got != "bookstack" {
+		t.Errorf("the form starts at %q, want the derived provider", got)
+	}
+	if got := labelsOf(fields); !reflect.DeepEqual(got,
+		[]string{"name", providerLabel, typeLabel, "token-id", "token-secret"}) {
+		t.Errorf("fields = %v, want only the BookStack roles", got)
+	}
+
+	// A second connection to another provider makes the answer ambiguous, and a guess would be worse than
+	// the question: the editor goes back to offering every role.
+	m.cfg.Connections["bot-personal"] = config.Connection{Service: "bot", Credential: "personal"}
+	if got := m.credentialProvider("personal", m.cfg.Credentials["personal"]); got != "" {
+		t.Errorf("provider of an ambiguous credential = %q, want none", got)
+	}
+
+	// What the credential names itself always wins over what its connections suggest.
+	m.cfg.Credentials["personal"] = config.Credential{
+		Provider: "telegram", Type: config.CredentialTypeKeyring,
+	}
+	if got := m.credentialProvider("personal", m.cfg.Credentials["personal"]); got != "telegram" {
+		t.Errorf("named provider = %q, want telegram", got)
+	}
+}
+
+func labelsOf(fields []field) []string {
+	labels := make([]string, len(fields))
+	for i, f := range fields {
+		labels[i] = f.label
+	}
+	return labels
 }
 
 func indexOf(t *testing.T, choices []string, want string) int {

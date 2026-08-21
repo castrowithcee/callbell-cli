@@ -125,13 +125,13 @@ const typeLabel = "type"
 // credential may, and then it decides which secret roles exist.
 const providerLabel = "provider"
 
-// providerOf names the system an entry belongs to, in the leading column both lists read down. A
-// credential written without a provider says so rather than leaving a gap that shifts every column.
-func providerOf(cred config.Credential) string {
-	if cred.Provider == "" {
+// providerColumn is the leading column both lists read down. A credential whose provider is neither named
+// nor derivable says so rather than leaving a gap that shifts every column.
+func providerColumn(provider string) string {
+	if provider == "" {
 		return "(none)"
 	}
-	return cred.Provider
+	return provider
 }
 
 // The defaults bridge the first frame until the terminal reports its real size. From then on both
@@ -701,6 +701,31 @@ func (m *Model) openForm(name string) tea.Cmd {
 	return nil
 }
 
+// credentialProvider is the provider a credential belongs to. It is the one the credential names, or,
+// while it names none, the one every connection using it agrees on: a connection binds this credential to
+// a service, and that service has a provider, so the answer is already in the configuration. A credential
+// no connection uses, or one two providers disagree about, has none.
+func (m *Model) credentialProvider(name string, cred config.Credential) string {
+	if cred.Provider != "" {
+		return cred.Provider
+	}
+	derived := ""
+	for _, connection := range m.cfg.Connections {
+		if connection.Credential != name {
+			continue
+		}
+		provider := m.cfg.Services[connection.Service].Provider
+		if provider == "" {
+			continue
+		}
+		if derived != "" && derived != provider {
+			return ""
+		}
+		derived = provider
+	}
+	return derived
+}
+
 // credentialRoles are the secret roles a credential actually uses. A credential that names its provider
 // uses exactly that provider's roles; one written before this field, or by hand without it, still has to
 // be editable, so it keeps offering every compiled role.
@@ -747,7 +772,15 @@ func (m *Model) credentialProviderChosen() tea.Cmd {
 	}
 	cred.Values = values
 	credType := m.credentialType()
-	m.fields = append(m.fields[:2:2], m.roleFields(cred, m.fieldValue(providerLabel), credType)...)
+	// Only the role rows are replaced. Slicing to a fixed length would have dropped whatever field
+	// happens to sit after them, so the rows to keep are the ones that are not roles.
+	kept := make([]field, 0, len(m.fields))
+	for _, f := range m.fields {
+		if f.kind != fieldEnvName && f.kind != fieldSecret {
+			kept = append(kept, f)
+		}
+	}
+	m.fields = append(kept, m.roleFields(cred, m.fieldValue(providerLabel), credType)...)
 	if m.focus >= len(m.fields) {
 		m.focus = len(m.fields) - 1
 	}
@@ -819,8 +852,9 @@ func (m *Model) buildFields(name string) []field {
 			// while env needs a variable exported in a shell the editor cannot reach.
 			credType = config.CredentialTypeKeyring
 		}
+		provider := m.credentialProvider(name, cred)
 		fields = append(fields,
-			choiceField(providerLabel, m.credentialProviders(cred.Provider), cred.Provider).
+			choiceField(providerLabel, m.credentialProviders(provider), provider).
 				withHint(credentialProviderHint),
 			choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint),
 		)
@@ -1487,7 +1521,8 @@ func (m *Model) dashboardEntry(s section, name string) string {
 		return fmt.Sprintf("%s · %s · %s", service.Provider, name, service.BaseURL)
 	case sectionCredentials:
 		cred := m.cfg.Credentials[name]
-		credentialRoles := m.credentialRoles(cred.Provider)
+		provider := m.credentialProvider(name, cred)
+		credentialRoles := m.credentialRoles(provider)
 		roles := make([]string, 0, len(credentialRoles))
 		for _, role := range credentialRoles {
 			source := sourceUnnamed
@@ -1498,7 +1533,8 @@ func (m *Model) dashboardEntry(s section, name string) string {
 			}
 			roles = append(roles, role+"="+source)
 		}
-		return fmt.Sprintf("%s · %s · %s · %s", providerOf(cred), name, cred.Type, strings.Join(roles, ", "))
+		return fmt.Sprintf("%s · %s · %s · %s", providerColumn(provider), name, cred.Type,
+			strings.Join(roles, ", "))
 	case sectionConnections:
 		connection := m.cfg.Connections[name]
 		detail := fmt.Sprintf("%s · %s + %s", name, connection.Service, connection.Credential)
@@ -1736,7 +1772,8 @@ func (m *Model) describe(name string) string {
 		// The type decides what the credential is, so it is part of the line rather than something the
 		// reader has to open the form to find out.
 		cred := m.cfg.Credentials[name]
-		credentialRoles := m.credentialRoles(cred.Provider)
+		provider := m.credentialProvider(name, cred)
+		credentialRoles := m.credentialRoles(provider)
 		parts := make([]string, 0, len(credentialRoles))
 		for _, role := range credentialRoles {
 			switch {
@@ -1747,7 +1784,7 @@ func (m *Model) describe(name string) string {
 					m.envSource(cred.Values[role])))
 			}
 		}
-		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s  %s", providerOf(cred), name, cred.Type,
+		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s  %s", providerColumn(provider), name, cred.Type,
 			strings.Join(parts, "  ")))
 	case sectionConnections:
 		conn := m.cfg.Connections[name]

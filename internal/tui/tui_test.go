@@ -386,8 +386,10 @@ func TestDashboardLayoutsFitTheirTerminal(t *testing.T) {
 	// The wide cards contain actual configuration rows, not only navigation labels and counts.
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	view := m.View()
-	// The provider leads both state rows, so a card reads down its systems before their names.
-	for _, want := range []string{"bookstack · wiki", "(none) · reader · env", "personal · wiki + reader"} {
+	// The provider leads both state rows, so a card reads down its systems before their names. The
+	// credential names no provider, but the connection binds it to a BookStack service, so the card says
+	// what that already settles.
+	for _, want := range []string{"bookstack · wiki", "bookstack · reader · env", "personal · wiki + reader"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("dashboard does not contain state row %q:\n%s", want, view)
 		}
@@ -1480,5 +1482,48 @@ func TestATallFormStaysUsableInASmallTerminal(t *testing.T) {
 	}
 	if m.quitting {
 		t.Error("leaving the notice quit the editor")
+	}
+}
+
+// Naming the provider of an existing credential is one choice and one save. Replacing the role rows must
+// not take the type row with them: without it the entry would be written with no type at all, and the
+// core would refuse the file the editor just produced.
+func TestNamingTheProviderKeepsTheRestOfTheCredential(t *testing.T) {
+	m, store, path := newModel(t)
+
+	addKeyringCredential(t, m, "bookstack-personal")
+	// The name of an existing entry is read-only, so the form opens on the provider row.
+	editEntry(t, m, "bookstack-personal")
+	selectChoice(t, m, "bookstack")
+	if got := m.credentialType(); got != config.CredentialTypeKeyring {
+		t.Fatalf("type after choosing the provider = %q, want the keyring it was created as", got)
+	}
+	pump(t, m, "enter")
+	if m.fail != "" {
+		t.Fatalf("saving reported %q", m.fail)
+	}
+
+	saved, err := loadTestConfig(t, path)
+	if err != nil {
+		t.Fatalf("the editor wrote a file its own core refuses: %v", err)
+	}
+	cred := saved.Credentials["bookstack-personal"]
+	if cred.Provider != "bookstack" || cred.Type != config.CredentialTypeKeyring {
+		t.Errorf("stored credential = %+v, want the BookStack keyring credential", cred)
+	}
+	if _, err := store.Load(); err != nil {
+		t.Errorf("Load() = %v", err)
+	}
+
+	// Only the two BookStack roles are asked for now.
+	editEntry(t, m, "bookstack-personal")
+	var roles []string
+	for _, f := range m.fields {
+		if f.kind == fieldEnvName || f.kind == fieldSecret {
+			roles = append(roles, f.label)
+		}
+	}
+	if strings.Join(roles, ",") != "token-id,token-secret" {
+		t.Errorf("roles = %v, want only the BookStack pair", roles)
 	}
 }

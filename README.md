@@ -39,8 +39,11 @@ edits it and `examples/config.yaml` documents every field.
 
 A credential accepts an optional `provider`. Secret roles are provider-defined, so this is what tells a
 BookStack token pair apart from a Telegram bot token: the editor then asks for exactly those roles, and a
-role the named provider does not define is refused instead of resolving to nothing. A credential without
-it stays valid and keeps offering every compiled role.
+role the named provider does not define is refused instead of resolving to nothing.
+
+A credential that names none is not lost: while a connection binds it to a service, that service names the
+provider, and the editor uses it. Only a credential no connection uses, or one two providers disagree
+about, falls back to offering every compiled role.
 
 A connection accepts an optional `description`: one line of at most 200 characters that says what the
 route is for. It is published by discovery, it is never sent to a provider, and it never selects a route:
