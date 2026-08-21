@@ -41,6 +41,13 @@ var testProviders ProviderCatalog = testProviderCatalog{
 		SecretRoles: []SecretRole{{Name: "api-key", Description: "Twenty API key"}},
 		Target:      TargetMetadata{Label: "target", Description: "not used by Twenty CRM"},
 	},
+	"seatable": {
+		ID: "seatable", Name: "SeaTable", DefaultBaseURL: "https://cloud.seatable.io",
+		SecretRoles: []SecretRole{{Name: "api-token", Description: "SeaTable API token of one base"}},
+		Target: TargetMetadata{
+			Label: "table", Required: true, Description: "fixed table, optionally with a view",
+		},
+	},
 	"telegram": {
 		ID: "telegram", Name: "Telegram", DefaultBaseURL: "https://api.telegram.org",
 		SecretRoles: []SecretRole{{Name: "bot-token", Description: "Telegram bot token"}},
@@ -95,7 +102,7 @@ func TestProviderMetadataNeverTreatsTargetAsASecret(t *testing.T) {
 	if !ok || !metadata.Target.Required || metadata.Target.Label != "chat ID" {
 		t.Fatalf("Telegram metadata = %+v, %v", metadata, ok)
 	}
-	if got := New(testProviders).SecretRoles(); len(got) != 4 || got[0] != "api-key" {
+	if got := New(testProviders).SecretRoles(); len(got) != 5 || got[0] != "api-key" {
 		t.Fatalf("secret roles = %v", got)
 	}
 }
