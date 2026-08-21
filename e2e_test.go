@@ -225,7 +225,7 @@ defaults:
 		}
 		// Every compiled tool is listed with the connections that can run it, so a tool without a
 		// configured route is visible as exactly that instead of silently missing.
-		if !strings.HasPrefix(stdout, "tools[9]:\n") {
+		if !strings.HasPrefix(stdout, "tools[11]:\n") {
 			t.Errorf("stdout = %q, want a TOON catalog of the compiled tools", stdout)
 		}
 		for _, want := range []string{
@@ -233,6 +233,7 @@ defaults:
 			"id: lexware.invoices.list", "id: lexware.invoices.get",
 			"id: twentycrm.companies.list", "id: twentycrm.companies.get",
 			"id: seatable.rows.list", "id: seatable.rows.get",
+			"id: nextcloud.files.list", "id: nextcloud.files.stat",
 			"connections[2]: archive,primary", "connections: []",
 		} {
 			if !strings.Contains(stdout, want) {

@@ -140,15 +140,16 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	if code != exitOK || stderr != "" {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "tools[9]:\n") || !strings.HasSuffix(stdout, "\n") ||
+	if !strings.HasPrefix(stdout, "tools[11]:\n") || !strings.HasSuffix(stdout, "\n") ||
 		strings.Contains(stdout, "\r") {
-		t.Errorf("stdout = %q, want an LF TOON document with a nine-element tools header", stdout)
+		t.Errorf("stdout = %q, want an LF TOON document with an eleven-element tools header", stdout)
 	}
 	for _, want := range []string{
 		"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
 		"id: lexware.invoices.list", "id: lexware.invoices.get",
 		"id: twentycrm.companies.list", "id: twentycrm.companies.get",
 		"id: seatable.rows.list", "id: seatable.rows.get",
+		"id: nextcloud.files.list", "id: nextcloud.files.stat",
 		"connections[1]: wiki", "connections[1]: alerts", "effect: create", "effect: read",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -176,7 +177,8 @@ func TestToolsFiltersByNamespaceAndQuery(t *testing.T) {
 	}{
 		{"complete catalog", nil, []string{
 			"bookstack.pages.get", "bookstack.pages.list", "lexware.invoices.get",
-			"lexware.invoices.list", "seatable.rows.get", "seatable.rows.list",
+			"lexware.invoices.list", "nextcloud.files.list", "nextcloud.files.stat",
+			"seatable.rows.get", "seatable.rows.list",
 			"telegram.messages.send", "twentycrm.companies.get", "twentycrm.companies.list",
 		}},
 		{"namespace", []string{"bookstack"}, []string{"bookstack.pages.get", "bookstack.pages.list"}},
@@ -186,6 +188,9 @@ func TestToolsFiltersByNamespaceAndQuery(t *testing.T) {
 			"twentycrm.companies.get", "twentycrm.companies.list",
 		}},
 		{"namespace seatable", []string{"seatable"}, []string{"seatable.rows.get", "seatable.rows.list"}},
+		{"namespace nextcloud", []string{"nextcloud"}, []string{
+			"nextcloud.files.list", "nextcloud.files.stat",
+		}},
 		{"query", []string{"--query", "pages"}, []string{"bookstack.pages.get", "bookstack.pages.list"}},
 		{"namespace and query", []string{"bookstack", "--query", "list"}, []string{"bookstack.pages.list"}},
 		{"query without a match", []string{"--query", "absent"}, []string{}},

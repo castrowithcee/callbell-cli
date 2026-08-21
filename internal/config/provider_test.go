@@ -48,6 +48,16 @@ var testProviders ProviderCatalog = testProviderCatalog{
 			Label: "table", Required: true, Description: "fixed table, optionally with a view",
 		},
 	},
+	"nextcloud": {
+		ID: "nextcloud", Name: "Nextcloud",
+		SecretRoles: []SecretRole{
+			{Name: "user-id", Description: "Nextcloud user ID of the identity to read as"},
+			{Name: "app-password", Description: "Nextcloud app password of the same identity"},
+		},
+		Target: TargetMetadata{
+			Label: "root folder", Required: true, Description: "fixed folder below the Files of this identity",
+		},
+	},
 	"telegram": {
 		ID: "telegram", Name: "Telegram", DefaultBaseURL: "https://api.telegram.org",
 		SecretRoles: []SecretRole{{Name: "bot-token", Description: "Telegram bot token"}},
@@ -102,7 +112,8 @@ func TestProviderMetadataNeverTreatsTargetAsASecret(t *testing.T) {
 	if !ok || !metadata.Target.Required || metadata.Target.Label != "chat ID" {
 		t.Fatalf("Telegram metadata = %+v, %v", metadata, ok)
 	}
-	if got := New(testProviders).SecretRoles(); len(got) != 5 || got[0] != "api-key" {
+	if got := New(testProviders).SecretRoles(); len(got) != 7 || got[0] != "api-key" ||
+		got[2] != "app-password" || got[6] != "user-id" {
 		t.Fatalf("secret roles = %v", got)
 	}
 }

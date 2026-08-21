@@ -49,6 +49,16 @@ services:
     provider: seatable
     base_url: https://seatable.example.invalid
 
+  # Nextcloud is one instance per service. The URL may carry an installation path when the instance does
+  # not sit at the root of its host; every request of a connection stays inside it.
+  cloud-main:
+    provider: nextcloud
+    base_url: https://cloud.example.invalid
+
+  cloud-partner:
+    provider: nextcloud
+    base_url: https://partner.example.invalid/nextcloud
+
 # A credential says where secrets come from. BookStack needs the roles token-id and token-secret.
 credentials:
   # type: keyring keeps the secrets in the credential store of the platform, so nothing has to be
@@ -105,6 +115,24 @@ credentials:
     type: keyring
 
   onprem-base-reader:
+    type: keyring
+
+  # Nextcloud needs the two roles user-id and app-password, because both belong to one identity. Create
+  # the app password under Settings, Security, Devices and sessions; it is revocable on its own and never
+  # exposes the account password or defeats a second factor.
+  #
+  # These two credentials are two identities of the same instance, so a connection always says which one
+  # it reads as.
+  cloud-reader:
+    type: keyring
+
+  cloud-auditor:
+    type: env
+    values:
+      user-id: CALLBELL_CLOUD_AUDITOR_USER_ID
+      app-password: CALLBELL_CLOUD_AUDITOR_APP_PASSWORD
+
+  partner-reader:
     type: keyring
 
 # A connection is what you select with --connection. It binds one service to one credential.
@@ -173,10 +201,34 @@ connections:
     credential: onprem-base-reader
     target: Tickets
 
+  # A Nextcloud connection binds one instance, one identity, and one fixed root folder below the Files of
+  # that identity. A read may address a path below that folder and nothing above it. A single / would
+  # bind the whole Files root of the identity.
+  files-reports:
+    service: cloud-main
+    credential: cloud-reader
+    target: Reports
+
+  files-archive:
+    service: cloud-main
+    credential: cloud-reader
+    target: Archive/2026
+
+  # The same instance read as a second identity, with its own app password and its own root folder.
+  files-audit:
+    service: cloud-main
+    credential: cloud-auditor
+    target: Audit
+
+  files-partner:
+    service: cloud-partner
+    credential: partner-reader
+    target: Shared/Callbell
+
 # Defaults are useful for read operations. The key is a tool namespace such as bookstack, or a complete
 # tool ID such as bookstack.pages.list when one tool needs its own route. Confirmed Telegram sends and
-# the Lexware, Twenty CRM and SeaTable reads deliberately ignore defaults and require the connection in
-# the exact invoke request.
+# the Lexware, Twenty CRM, SeaTable and Nextcloud reads deliberately ignore defaults and require the
+# connection in the exact invoke request.
 defaults:
   connections:
     bookstack: wiki
