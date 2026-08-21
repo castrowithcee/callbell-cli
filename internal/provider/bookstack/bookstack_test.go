@@ -384,7 +384,9 @@ func TestTestConnectionClasses(t *testing.T) {
 		}
 	})
 
-	t.Run("a cancelled context is unreachable", func(t *testing.T) {
+	// A request that ran into its deadline may still have arrived, so it keeps the unambiguous timeout
+	// class every provider reports, not the unreachable one that claims nothing was sent.
+	t.Run("an exhausted deadline is a timeout", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(200 * time.Millisecond)
 		}))
@@ -393,8 +395,8 @@ func TestTestConnectionClasses(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
 
-		if got := newClient(t, server.URL, nil).TestConnection(ctx); got != provider.ClassUnreachable {
-			t.Errorf("TestConnection() = %q, want unreachable", got)
+		if got := newClient(t, server.URL, nil).TestConnection(ctx); got != provider.ClassTimeout {
+			t.Errorf("TestConnection() = %q, want timeout", got)
 		}
 	})
 }

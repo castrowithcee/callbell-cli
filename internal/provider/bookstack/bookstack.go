@@ -6,8 +6,6 @@ package bookstack
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -382,27 +380,16 @@ func (c *Client) get(ctx context.Context, op, path string, query url.Values, out
 	return nil
 }
 
-// transportError classifies a failure that happened before a status code existed. The original error text
-// is not copied, so a URL carrying credentials can never reach the message.
+// transportError classifies a failure that happened before a status code existed. The shared classifier
+// owns the rules, so BookStack publishes the same class and the same transport cause as every other
+// provider, and the original error text is never copied.
 func transportError(op string, err error) error {
-	var (
-		certErr  *tls.CertificateVerificationError
-		hostErr  x509.HostnameError
-		authErr  x509.UnknownAuthorityError
-		recErr   tls.RecordHeaderError
-		expiring x509.CertificateInvalidError
-	)
-	switch {
-	case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &authErr),
-		errors.As(err, &recErr), errors.As(err, &expiring):
-		return &provider.Error{Class: provider.ClassTLS, Op: op, Message: "the TLS connection could not be established"}
-	}
 	// A refused redirect is a policy decision, not an unreachable server.
 	var refused *redirectRefusedError
 	if errors.As(err, &refused) {
 		return &provider.Error{Class: provider.ClassProviderError, Op: op, Message: refused.Error()}
 	}
-	return &provider.Error{Class: provider.ClassUnreachable, Op: op, Message: "the server could not be reached"}
+	return provider.Transport(op, "the server", err)
 }
 
 // statusError maps an HTTP status to a stable class. The provider message is passed through because

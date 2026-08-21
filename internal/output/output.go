@@ -136,7 +136,9 @@ func Limit(result Result, n int) Result {
 // Code is a provider-independent error class. Agents branch on it instead of parsing messages.
 type Code string
 
-// The error codes this build can emit. Providers add their transport classes on top.
+// The error codes this build can emit. Providers add their transport classes on top. A transport failure
+// that no typed error explains stays CodeUnreachable; one that a typed error does explain keeps that code
+// and adds the stable cause to its message, so a caller branching on the code alone is never surprised.
 const (
 	CodeUsage                 Code = "usage"
 	CodeInvalidRequest        Code = "invalid-request"

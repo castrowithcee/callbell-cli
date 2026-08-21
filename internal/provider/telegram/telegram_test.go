@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -150,13 +153,24 @@ func TestSendMessageNormalizesProviderAndTransportFailuresWithoutRetry(t *testin
 		status int
 		err    error
 		want   provider.Class
+		cause  provider.Cause
 	}{
 		{name: "authentication", status: http.StatusUnauthorized, want: provider.ClassAuth},
 		{name: "permission", status: http.StatusForbidden, want: provider.ClassPermission},
 		{name: "rate limit", status: http.StatusTooManyRequests, want: provider.ClassRateLimited},
 		{name: "provider", status: http.StatusBadRequest, want: provider.ClassProviderError},
+		// A deadline and a reset both leave open whether the message arrived, so the send is never
+		// repeated. The reset says which of the two happened without claiming the send was refused.
 		{name: "timeout", err: timeout, want: provider.ClassTimeout},
-		{name: "unreachable", err: errors.New("network ended after write"), want: provider.ClassUnreachable},
+		{
+			name: "connection reset after write",
+			err:  &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)},
+			want: provider.ClassUnreachable, cause: provider.CauseConnectionReset,
+		},
+		{
+			name: "unreachable", err: errors.New("network ended after write"),
+			want: provider.ClassUnreachable, cause: provider.CauseUnknown,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,8 +184,8 @@ func TestSendMessageNormalizesProviderAndTransportFailuresWithoutRetry(t *testin
 			}))
 			_, err := client.SendMessage(context.Background(), "one message")
 			var providerErr *provider.Error
-			if !errors.As(err, &providerErr) || providerErr.Class != tt.want {
-				t.Fatalf("SendMessage() = %T %v, want class %q", err, err, tt.want)
+			if !errors.As(err, &providerErr) || providerErr.Class != tt.want || providerErr.Cause != tt.cause {
+				t.Fatalf("SendMessage() = %T %v, want class %q cause %q", err, err, tt.want, tt.cause)
 			}
 			if strings.Contains(err.Error(), "private provider body") {
 				t.Fatalf("error leaks provider body: %v", err)

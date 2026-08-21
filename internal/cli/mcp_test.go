@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +17,8 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/application"
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
+	"github.com/castrowithcee/callbell-cli/internal/output"
+	"github.com/castrowithcee/callbell-cli/internal/provider"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 	"github.com/castrowithcee/callbell-cli/internal/secret"
 )
@@ -578,3 +582,62 @@ func jsonMember(t *testing.T, document json.RawMessage, key string) json.RawMess
 type mcpFailWriter struct{ err error }
 
 func (w mcpFailWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// A transport failure reaches an agent through two doors, and both must publish the same thing: the same
+// code, the same message, and the same stable cause. Nothing of the request may travel with it.
+func TestMCPAndCLITransportDiagnosisParity(t *testing.T) {
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	t.Setenv("CALLBELL_CREDENTIAL_STORE", "none")
+	const (
+		tokenCanary = "bot-token-canary-5517"
+		hostCanary  = "wiki.internal.example"
+		osCanary    = "raw-os-canary-9134"
+	)
+	// The chain is what net/http hands back: the request URL with its credential, the socket operation,
+	// and the resolver failure underneath.
+	transport := &url.Error{
+		Op: "Get", URL: "https://" + tokenCanary + "@" + hostCanary + "/api/pages",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{
+			Err: osCanary, Name: hostCanary, IsNotFound: true,
+		}},
+	}
+	registry, path := mcpTestRegistry(t, func(context.Context, *config.Resolved, *secret.Resolver,
+		*redact.Redactor, json.RawMessage) (any, error) {
+		return nil, provider.Transport("read page", "Fake", transport)
+	})
+
+	var stdout, stderr bytes.Buffer
+	redactor := &redact.Redactor{}
+	redactor.Add(tokenCanary)
+	opts := &Options{Input: strings.NewReader(""), Redactor: redactor, Config: path}
+	code := run(newRootCommand(opts, registry), opts,
+		[]string{"invoke", "fake.pages.get", "--connection", "primary", "--config", path}, &stdout, &stderr)
+	if code != exitRuntime || stdout.Len() != 0 {
+		t.Fatalf("CLI exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	cliDiagnostic := strings.TrimPrefix(strings.TrimSpace(stderr.String()), "callbell: ")
+
+	input := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{` + mcpTestMeta +
+		`,"name":"callbell.invoke","arguments":{"operation":"fake.pages.get","connection":"primary"}}}` + "\n"
+	responses, mcpStderr := runMCPWithOptions(t, registry, input,
+		&Options{Config: path, Redactor: redactor})
+	result := toolResultFrom(t, responses["1"])
+	if !result.IsError {
+		t.Fatalf("MCP result = %+v, want a tool error", result)
+	}
+
+	if result.Content[0].Text != cliDiagnostic {
+		t.Fatalf("MCP diagnosis = %q, CLI diagnosis = %q", result.Content[0].Text, cliDiagnostic)
+	}
+	// The class stays the compatible unreachable, and the cause is what a DNS failure now adds to it.
+	if !strings.HasPrefix(cliDiagnostic, string(output.CodeUnreachable)+": ") ||
+		!strings.HasSuffix(cliDiagnostic, "(cause: "+string(provider.CauseDNS)+")") {
+		t.Fatalf("diagnosis = %q, want an unreachable class with the dns cause", cliDiagnostic)
+	}
+	for _, canary := range []string{tokenCanary, hostCanary, osCanary, "/api/pages"} {
+		if strings.Contains(cliDiagnostic+stderr.String()+encodeResponses(t, responses)+mcpStderr, canary) {
+			t.Errorf("the diagnosis or the audit leaks the canary %q", canary)
+		}
+	}
+}

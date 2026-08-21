@@ -15,14 +15,11 @@ package nextcloud
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -845,36 +842,16 @@ func statusError(op string, status int) error {
 	}
 }
 
-// transportError classifies a failure that happened before a status code existed. The original error text
-// is not copied, so a URL or a header can never reach the message.
+// transportError classifies a failure that happened before a status code existed. The shared classifier
+// owns the rules, so Nextcloud publishes the same class and the same transport cause as every other
+// provider, and the original error text is never copied.
 func transportError(op string, err error) error {
-	var (
-		certErr    *tls.CertificateVerificationError
-		hostErr    x509.HostnameError
-		authErr    x509.UnknownAuthorityError
-		recordErr  tls.RecordHeaderError
-		invalidErr x509.CertificateInvalidError
-		netErr     net.Error
-		refused    *redirectRefusedError
-	)
-	switch {
-	case errors.As(err, &refused):
-		// A refused redirect is a policy decision, not an unreachable server.
+	// A refused redirect is a policy decision, not an unreachable server.
+	var refused *redirectRefusedError
+	if errors.As(err, &refused) {
 		return providerError(op, refused.Error())
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
-		return &provider.Error{
-			Class: provider.ClassTimeout, Op: op, Message: "Nextcloud did not answer in time",
-		}
-	case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &authErr),
-		errors.As(err, &recordErr), errors.As(err, &invalidErr):
-		return &provider.Error{
-			Class: provider.ClassTLS, Op: op, Message: "the TLS connection could not be established",
-		}
-	default:
-		return &provider.Error{
-			Class: provider.ClassUnreachable, Op: op, Message: "Nextcloud could not be reached",
-		}
 	}
+	return provider.Transport(op, "Nextcloud", err)
 }
 
 func providerError(op, message string) error {
