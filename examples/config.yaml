@@ -29,6 +29,16 @@ services:
     provider: lexware
     base_url: https://api.lexware.io
 
+  # Twenty CRM is either the managed cloud or a self-hosted workspace. Both are bare https origins: the
+  # requests of a connection never leave the origin its service names.
+  crm-cloud:
+    provider: twentycrm
+    base_url: https://api.twenty.com
+
+  crm-selfhosted:
+    provider: twentycrm
+    base_url: https://crm.example.invalid
+
 # A credential says where secrets come from. BookStack needs the roles token-id and token-secret.
 credentials:
   # type: keyring keeps the secrets in the credential store of the platform, so nothing has to be
@@ -58,6 +68,14 @@ credentials:
 
   # Lexware needs the single role api-key. Give the key the smallest permission the reads require.
   books-accountant:
+    type: keyring
+
+  # Twenty needs the single role api-key too. Assign each key a workspace role that may only read
+  # companies, and keep one key per workspace so the two never mix.
+  crm-cloud-reader:
+    type: keyring
+
+  crm-selfhosted-reader:
     type: keyring
 
 # A connection is what you select with --connection. It binds one service to one credential.
@@ -93,9 +111,20 @@ connections:
     service: books
     credential: books-accountant
 
+  # Twenty needs no target either: the workspace follows from the API key. Two workspaces stay two
+  # connections, so a read always names the one it means.
+  crm:
+    service: crm-cloud
+    credential: crm-cloud-reader
+
+  crm-internal:
+    service: crm-selfhosted
+    credential: crm-selfhosted-reader
+
 # Defaults are useful for read operations. The key is a tool namespace such as bookstack, or a complete
 # tool ID such as bookstack.pages.list when one tool needs its own route. Confirmed Telegram sends and
-# the Lexware reads deliberately ignore defaults and require the connection in the exact invoke request.
+# the Lexware and Twenty CRM reads deliberately ignore defaults and require the connection in the exact
+# invoke request.
 defaults:
   connections:
     bookstack: wiki

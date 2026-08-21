@@ -11,6 +11,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
 	"github.com/castrowithcee/callbell-cli/internal/provider/lexware"
 	"github.com/castrowithcee/callbell-cli/internal/provider/telegram"
+	"github.com/castrowithcee/callbell-cli/internal/provider/twentycrm"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
 
@@ -23,6 +24,9 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := lexware.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := twentycrm.Register(reg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -41,9 +45,9 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 
 	m.section = sectionServices
 	m.fields = m.buildFields("")
-	if got := m.fields[1].choices; len(got) != 3 || got[0] != "bookstack" || got[1] != "lexware" ||
-		got[2] != "telegram" {
-		t.Fatalf("provider choices = %v, want the BookStack, Lexware and Telegram registry IDs", got)
+	if got := m.fields[1].choices; len(got) != 4 || got[0] != "bookstack" || got[1] != "lexware" ||
+		got[2] != "telegram" || got[3] != "twentycrm" {
+		t.Fatalf("provider choices = %v, want the BookStack, Lexware, Telegram and Twenty registry IDs", got)
 	}
 	m.fields[1].index = 1
 	m.providerChosen("bookstack")
@@ -55,6 +59,11 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	if got := m.fieldValue("base url"); got != "https://api.telegram.org" {
 		t.Fatalf("Telegram default base URL = %q", got)
 	}
+	m.fields[1].index = 3
+	m.providerChosen("telegram")
+	if got := m.fieldValue("base url"); got != "https://api.twenty.com" {
+		t.Fatalf("Twenty CRM default origin = %q", got)
+	}
 	m.section = sectionCredentials
 	credentialFields := m.buildFields("notifier")
 	if len(credentialFields) != 6 || credentialFields[2].label != "api-key" ||
@@ -65,6 +74,8 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	m.cfg.Services["telegram-main"] = config.Service{Provider: "telegram", BaseURL: "https://api.telegram.org"}
 	m.cfg.Services["lexware-main"] = config.Service{Provider: "lexware", BaseURL: "https://api.lexware.io"}
 	m.cfg.Services["wiki-main"] = config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}
+	m.cfg.Services["crm-cloud"] = config.Service{Provider: "twentycrm", BaseURL: "https://api.twenty.com"}
+	m.cfg.Services["crm-selfhosted"] = config.Service{Provider: "twentycrm", BaseURL: "https://crm.example.invalid"}
 	m.cfg.Credentials["notifier"] = config.Credential{Type: config.CredentialTypeKeyring}
 	m.cfg.Credentials["reader"] = config.Credential{Type: config.CredentialTypeKeyring}
 	m.cfg.Connections["alerts"] = config.Connection{Service: "telegram-main", Credential: "notifier", Target: "-1001"}
@@ -74,6 +85,12 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	m.cfg.Connections["books-audit"] = config.Connection{Service: "lexware-main", Credential: "accounting"}
 	m.cfg.Connections["wiki-primary"] = config.Connection{Service: "wiki-main", Credential: "reader"}
 	m.cfg.Connections["wiki-audit"] = config.Connection{Service: "wiki-main", Credential: "reader"}
+	m.cfg.Credentials["crm-cloud-reader"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.cfg.Credentials["crm-selfhosted-reader"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.cfg.Connections["crm"] = config.Connection{Service: "crm-cloud", Credential: "crm-cloud-reader"}
+	m.cfg.Connections["crm-internal"] = config.Connection{
+		Service: "crm-selfhosted", Credential: "crm-selfhosted-reader",
+	}
 	m.section = sectionConnections
 	connectionFields := m.buildFields("alerts")
 	if connectionFields[3].value() != "-1001" || !strings.Contains(connectionFields[3].hint, "required for Telegram") {
@@ -95,6 +112,22 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	for _, name := range []string{"wiki-primary", "wiki-audit"} {
 		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, name+" · wiki-main + reader") {
 			t.Fatalf("BookStack dashboard entry = %q, want named connection %q", got, name)
+		}
+	}
+
+	// Two Twenty workspaces stay two visibly separate connections, each with its own origin and key, and
+	// neither needs a target.
+	twentyFields := m.buildFields("crm")
+	if strings.Contains(twentyFields[3].hint, "required") ||
+		!strings.Contains(twentyFields[3].hint, "not used by Twenty CRM") {
+		t.Fatalf("Twenty target hint = %q, want an optional target", twentyFields[3].hint)
+	}
+	for name, want := range map[string]string{
+		"crm":          "crm · crm-cloud + crm-cloud-reader",
+		"crm-internal": "crm-internal · crm-selfhosted + crm-selfhosted-reader",
+	} {
+		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, want) {
+			t.Fatalf("Twenty dashboard entry = %q, want %q", got, want)
 		}
 	}
 }

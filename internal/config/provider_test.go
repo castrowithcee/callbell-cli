@@ -36,6 +36,11 @@ var testProviders ProviderCatalog = testProviderCatalog{
 		SecretRoles: []SecretRole{{Name: "api-key", Description: "Lexware private API key"}},
 		Target:      TargetMetadata{Label: "target", Description: "not used by Lexware"},
 	},
+	"twentycrm": {
+		ID: "twentycrm", Name: "Twenty CRM", DefaultBaseURL: "https://api.twenty.com",
+		SecretRoles: []SecretRole{{Name: "api-key", Description: "Twenty API key"}},
+		Target:      TargetMetadata{Label: "target", Description: "not used by Twenty CRM"},
+	},
 	"telegram": {
 		ID: "telegram", Name: "Telegram", DefaultBaseURL: "https://api.telegram.org",
 		SecretRoles: []SecretRole{{Name: "bot-token", Description: "Telegram bot token"}},
