@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strconv"
 	"unicode/utf8"
@@ -134,12 +135,32 @@ func validateAt(schema map[string]json.RawMessage, value any, path string) error
 				return fmt.Errorf("%s is longer than %d characters", path, maximum)
 			}
 		}
+		if raw := schema["pattern"]; len(raw) > 0 {
+			var pattern string
+			if err := json.Unmarshal(raw, &pattern); err != nil {
+				return fmt.Errorf("schema at %s has an invalid pattern", path)
+			}
+			expression, err := regexp.Compile(pattern)
+			if err != nil {
+				return fmt.Errorf("schema at %s has an invalid pattern", path)
+			}
+			if !expression.MatchString(value) {
+				return fmt.Errorf("%s does not have the required form", path)
+			}
+		}
 	case json.Number:
 		if raw := schema["minimum"]; len(raw) > 0 {
 			minimum, _ := strconv.ParseFloat(string(raw), 64)
 			number, _ := value.Float64()
 			if number < minimum {
 				return fmt.Errorf("%s must be at least %v", path, minimum)
+			}
+		}
+		if raw := schema["maximum"]; len(raw) > 0 {
+			maximum, _ := strconv.ParseFloat(string(raw), 64)
+			number, _ := value.Float64()
+			if number > maximum {
+				return fmt.Errorf("%s must be at most %v", path, maximum)
 			}
 		}
 	}

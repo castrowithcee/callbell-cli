@@ -215,6 +215,38 @@ func TestInputSchemaErrorsAreDeterministic(t *testing.T) {
 	}
 }
 
+// A bound and a form an operation cannot express as a type belong to its schema, so the core refuses them
+// before route selection, credential resolution, and provider I/O.
+func TestSchemaBoundsAndPatternsAreEnforced(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{` +
+		`"size":{"type":"integer","minimum":1,"maximum":100},` +
+		`"date":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}},"additionalProperties":false}`)
+
+	tests := []struct {
+		name      string
+		arguments string
+		want      string
+	}{
+		{"inside the bounds", `{"size":100,"date":"2026-05-14"}`, ""},
+		{"at the lower bound", `{"size":1}`, ""},
+		{"above the maximum", `{"size":101}`, "$.size must be at most 100"},
+		{"below the minimum", `{"size":0}`, "$.size must be at least 1"},
+		{"pattern mismatch", `{"date":"14.05.2026"}`, "$.date does not have the required form"},
+		{"empty string", `{"date":""}`, "$.date does not have the required form"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateJSON(schema, json.RawMessage(tt.arguments))
+			switch {
+			case tt.want == "" && err != nil:
+				t.Fatalf("validateJSON() = %v, want no error", err)
+			case tt.want != "" && (err == nil || err.Error() != tt.want):
+				t.Fatalf("validateJSON() = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestInvokeDispatchesReadAndConfirmedMutation(t *testing.T) {
 	core, calls := testCore(t, []string{"primary"}, nil, true)
 	requests := []InvokeRequest{
