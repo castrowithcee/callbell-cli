@@ -107,7 +107,7 @@ func TestSeaTableToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"tools[2]{connections,id}:", "4,seatable.rows.get", "4,seatable.rows.list",
+		"tools[2]{effect,id,title}:", "read,seatable.rows.get,", "read,seatable.rows.list,",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)

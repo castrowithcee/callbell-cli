@@ -106,7 +106,7 @@ func TestNextcloudToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"tools[2]{connections,id}:", "4,nextcloud.files.list", "4,nextcloud.files.stat",
+		"tools[2]{effect,id,title}:", "read,nextcloud.files.list,", "read,nextcloud.files.stat,",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)

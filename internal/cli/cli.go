@@ -165,6 +165,7 @@ func newRootCommand(opts *Options, reg *capability.Registry) *cobra.Command {
 	cmd.AddCommand(
 		newConfigCommand(opts, reg),
 		newCredentialCommand(opts, reg),
+		newProvidersCommand(opts, reg),
 		newToolsCommand(opts, reg),
 		newToolCommand(opts, reg),
 		newInvokeCommand(opts, reg),

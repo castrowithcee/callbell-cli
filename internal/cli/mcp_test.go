@@ -135,9 +135,9 @@ func TestMCPToolsUseApplicationCoreContracts(t *testing.T) {
 		t.Fatalf("index = %+v, want the %d searched operations", indexed, len(searchResult.Operations))
 	}
 	for i, tool := range indexed {
-		if tool.ID != searchResult.Operations[i].ID ||
-			tool.Connections != len(searchResult.Operations[i].Connections) {
-			t.Errorf("index[%d] = %+v, want %+v", i, tool, searchResult.Operations[i])
+		hit := searchResult.Operations[i]
+		if tool.ID != hit.ID || tool.Title != hit.Title || tool.Effect != hit.Effect {
+			t.Errorf("index[%d] = %+v, want %+v", i, tool, hit)
 		}
 	}
 

@@ -140,42 +140,52 @@ func toolIDs(t *testing.T, stdout string) []string {
 	return ids
 }
 
-// Acceptance 1: the catalog is a deterministic local TOON index of the configured BookStack and Telegram
-// tools, produced without any provider I/O. Each entry is the tool ID and the number of configured
-// connections and nothing else: what a tool is, does, and risks belongs to its own contract.
-func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
+// providerSummaries decodes the namespace index. Decoding into the core type is what proves that the
+// command publishes that model and nothing else: a stray field would fail the strict decoder.
+func providerSummaries(t *testing.T, stdout string) []application.ProviderSummary {
+	t.Helper()
+	var document struct {
+		Providers []application.ProviderSummary `json:"providers"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatalf("providers output is not the namespace index: %v: %s", err, stdout)
+	}
+	return document.Providers
+}
+
+// Acceptance 1: discovery starts with the namespaces. The list is a deterministic local TOON table of one
+// row per provider, produced without any provider I/O, and it stays one row per provider however many
+// tools that provider offers.
+func TestProvidersListsTheNamespacesAsTOON(t *testing.T) {
 	cfg, calls, _ := catalogEnvironment(t)
 
-	code, stdout, stderr := runTools(t, nil, "tools", "--config", cfg)
+	code, stdout, stderr := runTools(t, nil, "providers", "--config", cfg)
 	if code != exitOK || stderr != "" {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "tools[11]{connections,id}:\n") || !strings.HasSuffix(stdout, "\n") ||
-		strings.Contains(stdout, "\r") {
-		t.Errorf("stdout = %q, want an LF TOON table of eleven connections and id rows", stdout)
+	if !strings.HasPrefix(stdout, "providers[6]{connections,provider,tools}:\n") ||
+		!strings.HasSuffix(stdout, "\n") || strings.Contains(stdout, "\r") {
+		t.Errorf("stdout = %q, want an LF TOON table of six namespace rows", stdout)
 	}
 	for _, want := range []string{
 		// BookStack has exactly one configured connection, Telegram one, and every other compiled
-		// provider none. An unconfigured tool stays visible with zero.
-		"1,bookstack.pages.get", "1,bookstack.pages.list", "1,telegram.messages.send",
-		"0,lexware.invoices.list", "0,lexware.invoices.get",
-		"0,twentycrm.companies.list", "0,twentycrm.companies.get",
-		"0,seatable.rows.list", "0,seatable.rows.get",
-		"0,nextcloud.files.list", "0,nextcloud.files.stat",
+		// provider none. An unconfigured namespace stays visible with zero.
+		"1,bookstack,2", "1,telegram,1", "0,lexware,2", "0,nextcloud,2", "0,seatable,2", "0,twentycrm,2",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout does not contain %q:\n%s", want, stdout)
 		}
 	}
-	// The index carries no second contract: title, description, tags, effect, and connection names stay
-	// in the tool document that answers for exactly one tool.
-	for _, absent := range []string{"title", "description", "tags", "effect", "wiki", "alerts", "version"} {
+	// The first step names namespaces, not tools: no ID, no title, and no connection name reaches it.
+	for _, absent := range []string{".", "title", "description", "effect", "wiki", "alerts"} {
 		if strings.Contains(stdout, absent) {
-			t.Errorf("the compact index published %q:\n%s", absent, stdout)
+			t.Errorf("the namespace index published %q:\n%s", absent, stdout)
 		}
 	}
 	for i := 0; i < 3; i++ {
-		if _, repeat, _ := runTools(t, nil, "tools", "--config", cfg); repeat != stdout {
+		if _, repeat, _ := runTools(t, nil, "providers", "--config", cfg); repeat != stdout {
 			t.Fatalf("run %d = %q, want %q", i+2, repeat, stdout)
 		}
 	}
@@ -184,7 +194,68 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	}
 
 	t.Run("the TOON default and --output json carry the same index", func(t *testing.T) {
-		code, jsonOut, stderr := runTools(t, nil, "tools", "--config", cfg, "--output", "json")
+		code, jsonOut, stderr := runTools(t, nil, "providers", "--config", cfg, "--output", "json")
+		if code != exitOK || stderr != "" {
+			t.Fatalf("exit=%d stderr=%q", code, stderr)
+		}
+		if got := toonOfJSON(t, jsonOut); got != stdout {
+			t.Errorf("TOON output = %q, want the TOON rendering of the JSON data %q", stdout, got)
+		}
+		for _, provider := range providerSummaries(t, jsonOut) {
+			want := 0
+			switch provider.Provider {
+			case "bookstack", "telegram":
+				want = 1
+			}
+			if provider.Connections != want {
+				t.Errorf("%s connections = %d, want %d", provider.Provider, provider.Connections, want)
+			}
+		}
+	})
+
+	t.Run("an argument is a usage error", func(t *testing.T) {
+		code, _, stderr := runTools(t, nil, "providers", "bookstack", "--config", cfg)
+		if code != exitUsage || stderr == "" {
+			t.Errorf("exit=%d stderr=%q", code, stderr)
+		}
+	})
+}
+
+// Acceptance 1b: the second step lists the tools of one namespace as a deterministic local TOON table.
+// Each entry says what the tool is and whether it changes anything; schemas, tags and routes stay in the
+// tool document that answers for exactly one tool.
+func TestToolsListsOneNamespaceAsTOON(t *testing.T) {
+	cfg, calls, _ := catalogEnvironment(t)
+
+	code, stdout, stderr := runTools(t, nil, "tools", "bookstack", "--config", cfg)
+	if code != exitOK || stderr != "" {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.HasPrefix(stdout, "tools[2]{effect,id,title}:\n") || !strings.HasSuffix(stdout, "\n") ||
+		strings.Contains(stdout, "\r") {
+		t.Errorf("stdout = %q, want an LF TOON table of effect, id and title rows", stdout)
+	}
+	for _, want := range []string{"read,bookstack.pages.get,", "read,bookstack.pages.list,"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout does not contain %q:\n%s", want, stdout)
+		}
+	}
+	for _, absent := range []string{"description", "tags", "version", "wiki", "connections"} {
+		if strings.Contains(stdout, absent) {
+			t.Errorf("the namespace listing published %q:\n%s", absent, stdout)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, repeat, _ := runTools(t, nil, "tools", "bookstack", "--config", cfg); repeat != stdout {
+			t.Fatalf("run %d = %q, want %q", i+2, repeat, stdout)
+		}
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("provider calls = %d, want 0", got)
+	}
+
+	t.Run("the TOON default and --output json carry the same listing", func(t *testing.T) {
+		code, jsonOut, stderr := runTools(t, nil, "tools", "bookstack", "--config", cfg, "--output", "json")
 		if code != exitOK || stderr != "" {
 			t.Fatalf("exit=%d stderr=%q", code, stderr)
 		}
@@ -192,14 +263,18 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 			t.Errorf("TOON output = %q, want the TOON rendering of the JSON data %q", stdout, got)
 		}
 		for _, tool := range toolSummaries(t, jsonOut) {
-			want := 0
-			switch tool.ID {
-			case "bookstack.pages.get", "bookstack.pages.list", "telegram.messages.send":
-				want = 1
+			if tool.Title == "" || tool.Effect != capability.EffectRead {
+				t.Errorf("%s = %+v, want a titled read tool", tool.ID, tool)
 			}
-			if tool.Connections != want {
-				t.Errorf("%s connections = %d, want %d", tool.ID, tool.Connections, want)
-			}
+		}
+	})
+
+	// Without a namespace and without a query the command would print the whole catalog, which is what
+	// the cascade exists to avoid. It names the first step instead.
+	t.Run("a bare tools call names the first step", func(t *testing.T) {
+		code, stdout, stderr := runTools(t, nil, "tools", "--config", cfg)
+		if code != exitUsage || stdout != "" || !strings.Contains(stderr, "callbell providers") {
+			t.Errorf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 	})
 }
@@ -213,12 +288,6 @@ func TestToolsFiltersByNamespaceAndQuery(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"complete catalog", nil, []string{
-			"bookstack.pages.get", "bookstack.pages.list", "lexware.invoices.get",
-			"lexware.invoices.list", "nextcloud.files.list", "nextcloud.files.stat",
-			"seatable.rows.get", "seatable.rows.list",
-			"telegram.messages.send", "twentycrm.companies.get", "twentycrm.companies.list",
-		}},
 		{"namespace", []string{"bookstack"}, []string{"bookstack.pages.get", "bookstack.pages.list"}},
 		{"namespace telegram", []string{"telegram"}, []string{"telegram.messages.send"}},
 		{"namespace lexware", []string{"lexware"}, []string{"lexware.invoices.get", "lexware.invoices.list"}},
@@ -355,7 +424,7 @@ func TestDiscoveryReadsNoSecretsAndLeaksNoCanary(t *testing.T) {
 
 	var reads atomic.Int32
 	for _, args := range [][]string{
-		{"tools", "--config", cfg},
+		{"providers", "--config", cfg},
 		{"tools", "bookstack", "--config", cfg, "--output", "json"},
 		{"tool", "telegram.messages.send", "--config", cfg},
 		{"tool", "bookstack.pages.list", "--config", cfg, "--output", "json"},
@@ -444,7 +513,7 @@ func TestLargeCatalogGrowsOnlyTheData(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	opts := &Options{Input: strings.NewReader(""), Redactor: &redact.Redactor{}}
 	code := run(newRootCommand(opts, syntheticRegistry(t, 128)), opts,
-		[]string{"tools", "--config", cfg, "--output", "json"}, &stdout, &stderr)
+		[]string{"tools", "synthetic", "--config", cfg, "--output", "json"}, &stdout, &stderr)
 	if code != exitOK || stderr.Len() != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr.String())
 	}
@@ -459,7 +528,7 @@ func TestPublicSurfaceIsTheToolTaxonomy(t *testing.T) {
 	root := DocumentationCommand("test")
 	want := []string{
 		"config", "config validate", "credential", "credential delete", "credential set",
-		"invoke", "mcp", "tool", "tools", "tui", "update",
+		"invoke", "mcp", "providers", "tool", "tools", "tui", "update",
 	}
 	if got := commandNames(root); !reflect.DeepEqual(got, want) {
 		t.Errorf("commands = %v, want %v", got, want)
@@ -524,24 +593,36 @@ func TestToolCommandsKeepTheDataOfTheRemovedCommands(t *testing.T) {
 	}
 
 	// capabilities listed name, risk, and description of every operation a connection offers.
-	code, stdout, stderr := runTools(t, nil, "tools", "--config", cfg, "--output", "json")
+	code, stdout, stderr := runTools(t, nil, "tools", "bookstack", "--config", cfg, "--output", "json")
 	if code != exitOK || stderr != "" {
 		t.Fatalf("tools exit=%d stderr=%q", code, stderr)
 	}
-	catalog, err := core.Tools(application.SearchRequest{})
+	catalog, err := core.Tools(application.SearchRequest{Provider: "bookstack"})
 	if err != nil {
 		t.Fatalf("Tools() = %v", err)
 	}
 	if got := toolSummaries(t, stdout); !reflect.DeepEqual(got, catalog.Tools) {
 		t.Errorf("tools = %+v, want %+v", got, catalog.Tools)
 	}
-	for _, descriptor := range defaultRegistry().All() {
-		found := false
-		for _, tool := range catalog.Tools {
-			found = found || tool.ID == descriptor.ID
+	// The cascade must still reach every compiled operation: walking the namespaces and listing each one
+	// names exactly the catalog the removed commands published in one answer.
+	reachable := map[string]bool{}
+	for _, provider := range core.Providers().Providers {
+		listed, err := core.Tools(application.SearchRequest{Provider: provider.Provider})
+		if err != nil {
+			t.Fatalf("Tools(%s) = %v", provider.Provider, err)
 		}
-		if !found {
-			t.Errorf("the index is missing %q", descriptor.ID)
+		if len(listed.Tools) != provider.Tools {
+			t.Errorf("%s lists %d tools, want the %d it counts", provider.Provider, len(listed.Tools),
+				provider.Tools)
+		}
+		for _, tool := range listed.Tools {
+			reachable[tool.ID] = true
+		}
+	}
+	for _, descriptor := range defaultRegistry().All() {
+		if !reachable[descriptor.ID] {
+			t.Errorf("the cascade never reaches %q", descriptor.ID)
 		}
 	}
 
@@ -563,9 +644,8 @@ func TestToolCommandsKeepTheDataOfTheRemovedCommands(t *testing.T) {
 		if tool.ID != searched.Operations[i].ID {
 			t.Errorf("query result[%d] = %q, want %q", i, tool.ID, searched.Operations[i].ID)
 		}
-		if tool.Connections != len(searched.Operations[i].Connections) {
-			t.Errorf("query result[%d] connections = %d, want %d", i, tool.Connections,
-				len(searched.Operations[i].Connections))
+		if tool.Title != searched.Operations[i].Title || tool.Effect != searched.Operations[i].Effect {
+			t.Errorf("query result[%d] = %+v, want %+v", i, tool, searched.Operations[i])
 		}
 	}
 

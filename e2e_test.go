@@ -219,33 +219,56 @@ defaults:
 	})
 
 	t.Run("the tool catalog is discovered", func(t *testing.T) {
-		code, stdout, stderr := c.run(t, "tools")
+		code, stdout, stderr := c.run(t, "providers")
 
 		if code != 0 {
 			t.Fatalf("exit %d, stderr %q", code, stderr)
 		}
-		// Every compiled tool is listed with the number of connections that can run it, so a tool
-		// without a configured route is visible as exactly that instead of silently missing.
-		if !strings.HasPrefix(stdout, "tools[11]{connections,id}:\n") {
-			t.Errorf("stdout = %q, want a TOON index of the compiled tools", stdout)
+		// Discovery starts with one row per namespace: how many tools it offers and how many configured
+		// connections can run them. A provider without a route is visible as exactly that.
+		if !strings.HasPrefix(stdout, "providers[6]{connections,provider,tools}:\n") {
+			t.Errorf("stdout = %q, want a TOON index of the compiled namespaces", stdout)
 		}
 		for _, want := range []string{
-			"2,bookstack.pages.get", "2,bookstack.pages.list", "0,telegram.messages.send",
-			"0,lexware.invoices.list", "0,lexware.invoices.get",
-			"0,twentycrm.companies.list", "0,twentycrm.companies.get",
-			"0,seatable.rows.list", "0,seatable.rows.get",
-			"0,nextcloud.files.list", "0,nextcloud.files.stat",
+			"2,bookstack,2", "0,telegram,1", "0,lexware,2", "0,twentycrm,2", "0,seatable,2",
+			"0,nextcloud,2",
 		} {
 			if !strings.Contains(stdout, want) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
 			}
 		}
-		// The index says which tools exist and which of them have a route; what a tool is and what its
-		// routes are for is one tool document away.
-		for _, absent := range []string{"title", "description", "effect", "archive", "primary"} {
+		// The first step names namespaces only: no tool ID and no route name reaches it.
+		for _, absent := range []string{".", "title", "effect", "archive", "primary"} {
 			if strings.Contains(stdout, absent) {
-				t.Errorf("stdout = %q, want the compact index without %q", stdout, absent)
+				t.Errorf("stdout = %q, want the namespace index without %q", stdout, absent)
 			}
+		}
+
+		// The second step lists the tools of one namespace with what each one is and does.
+		code, stdout, stderr = c.run(t, "tools", "bookstack")
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		if !strings.HasPrefix(stdout, "tools[2]{effect,id,title}:\n") {
+			t.Errorf("stdout = %q, want a TOON listing of the BookStack tools", stdout)
+		}
+		for _, want := range []string{"read,bookstack.pages.get,", "read,bookstack.pages.list,"} {
+			if !strings.Contains(stdout, want) {
+				t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+			}
+		}
+		// What a tool needs, risks and can route through is one tool document away.
+		for _, absent := range []string{"description", "tags", "archive", "primary", "schema"} {
+			if strings.Contains(stdout, absent) {
+				t.Errorf("stdout = %q, want the namespace listing without %q", stdout, absent)
+			}
+		}
+
+		// The bare call would print everything, which is what the cascade avoids; it names the first
+		// step instead.
+		code, stdout, stderr = c.run(t, "tools")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "callbell providers") {
+			t.Errorf("exit %d, stdout %q, stderr %q; want the cascade hint", code, stdout, stderr)
 		}
 	})
 
@@ -384,9 +407,9 @@ defaults:
 			{"unknown flag", []string{"--nope"}, "", 2, "usage", "callbell [flags]"},
 			{"unknown command", []string{"frobnicate"}, "", 2, "usage", "callbell [flags]"},
 			{"unknown connection", []string{"invoke", "bookstack.pages.list", "--connection", "absent"}, "", 2, "unknown-connection", "callbell invoke <tool-id> [flags]"},
-			{"empty configuration file", []string{"tools", "--config", "/dev/null"}, "", 2, "config-invalid", "callbell tools [namespace] [flags]"},
+			{"empty configuration file", []string{"tools", "bookstack", "--config", "/dev/null"}, "", 2, "config-invalid", "callbell tools <namespace> [flags]"},
 			{"unknown tool", []string{"tool", "absent.pages.get"}, "", 2, "unknown-operation", "callbell tool <tool-id> [flags]"},
-			{"unknown namespace", []string{"tools", "absent"}, "", 2, "usage", "callbell tools [namespace] [flags]"},
+			{"unknown namespace", []string{"tools", "absent"}, "", 2, "usage", "callbell tools <namespace> [flags]"},
 			{"unknown tool verb", []string{"tool", "show", "bookstack.pages.list"}, "", 2, "usage", "callbell tool <tool-id> [flags]"},
 			{"missing page", []string{"invoke", "bookstack.pages.get"}, `{"id":99}`, 1, "provider-error", ""},
 		}
@@ -775,9 +798,8 @@ defaults: {}
 			}
 		}
 
-		// callbell.search keeps the request-bound agent contract, while the public index publishes only
-		// the tool ID and how many routes can run it. What both must agree on is which tools exist and
-		// how many routes each one has.
+		// callbell.search keeps the request-bound agent contract, while the public listing publishes only
+		// what choosing a tool needs. What both must agree on is which tools exist and what they are.
 		index, searched := member(t, jsonCLIDocument(t, c, "", "tools", "bookstack", "--query", "pages",
 			"--output", "json"), "tools"), member(t, mcpData(t, responses["search"]), "operations")
 		indexed, indexOK := index.([]any)
@@ -788,9 +810,9 @@ defaults: {}
 		for i := range indexed {
 			entry, _ := indexed[i].(map[string]any)
 			hit, _ := operations[i].(map[string]any)
-			routes, _ := hit["connections"].([]any)
-			if len(entry) != 2 || entry["id"] != hit["id"] || entry["connections"] != float64(len(routes)) {
-				t.Errorf("index[%d] = %#v, want only %v with its %d routes", i, entry, hit["id"], len(routes))
+			if len(entry) != 3 || entry["id"] != hit["id"] || entry["title"] != hit["title"] ||
+				entry["effect"] != hit["effect"] {
+				t.Errorf("index[%d] = %#v, want the id, title and effect of %v", i, entry, hit["id"])
 			}
 		}
 	})

@@ -103,12 +103,49 @@ func (c *Core) Search(request SearchRequest) (SearchResponse, error) {
 	return SearchResponse{Operations: hits}, nil
 }
 
-// ToolSummary is the compact index entry of one tool: its ID and how many configured connections can run
-// it. A tool without a configured connection stays in the index with zero, so it is visible as
+// ProviderSummary is one namespace of the tool catalog: how many tools it offers and how many configured
+// connections can run them. A provider without a connection stays listed with zero, so it is visible as
 // unconfigured rather than silently missing.
-type ToolSummary struct {
-	ID          string `json:"id"`
+type ProviderSummary struct {
+	Provider    string `json:"provider"`
+	Tools       int    `json:"tools"`
 	Connections int    `json:"connections"`
+}
+
+// ProvidersResponse is the payload inside the CLI envelope.
+type ProvidersResponse struct {
+	Providers []ProviderSummary `json:"providers"`
+}
+
+// Providers answers the first step of discovery: which namespaces exist at all. It stays one line per
+// provider however large the catalog grows, so a reader picks a namespace before paying for its tools.
+func (c *Core) Providers() ProvidersResponse {
+	// The namespaces are counted from the descriptors themselves, not from the provider metadata, so a
+	// namespace that answers "tools" can never be missing here. Descriptors arrive sorted by ID, and the
+	// namespace is the ID prefix, so first appearance is already alphabetical order.
+	providers := make([]ProviderSummary, 0)
+	at := map[string]int{}
+	for _, descriptor := range c.registry.All() {
+		index, seen := at[descriptor.Provider]
+		if !seen {
+			index = len(providers)
+			at[descriptor.Provider] = index
+			providers = append(providers, ProviderSummary{
+				Provider: descriptor.Provider, Connections: len(c.connectionNames(descriptor.Provider)),
+			})
+		}
+		providers[index].Tools++
+	}
+	return ProvidersResponse{Providers: providers}
+}
+
+// ToolSummary is the index entry of one tool: the ID an invoke request carries, what the tool does, and
+// whether it reads or changes the remote system. That is what choosing between the tools of one namespace
+// needs; schemas, tags, examples and routes are one describe away.
+type ToolSummary struct {
+	ID     string            `json:"id"`
+	Title  string            `json:"title"`
+	Effect capability.Effect `json:"effect"`
 }
 
 // ToolsResponse is the payload inside the CLI envelope.
@@ -116,9 +153,8 @@ type ToolsResponse struct {
 	Tools []ToolSummary `json:"tools"`
 }
 
-// Tools is the discovery index over the complete local catalog. It applies the same filters as Search to
-// the same descriptors but publishes only what picking a tool needs: everything else about a tool is one
-// describe away, and repeating it per entry would spend a reader's attention on text nobody asked for.
+// Tools is the second step of discovery: the tools of one namespace, or of one targeted query. It applies
+// the same filters as Search to the same descriptors but publishes only what picking a tool needs.
 //
 // The catalog view answers what this installation offers, so a truncated answer would read as a complete
 // one; the bounded Search response stays the contract of the request-bound agent surface.
@@ -129,9 +165,11 @@ func (c *Core) Tools(request SearchRequest) (ToolsResponse, error) {
 	}
 	tools := make([]ToolSummary, 0, len(descriptors))
 	for _, descriptor := range descriptors {
-		tools = append(tools, ToolSummary{
-			ID: descriptor.ID, Connections: len(c.connectionNames(descriptor.Provider)),
-		})
+		title := descriptor.Title
+		if title == "" {
+			title = descriptor.Description
+		}
+		tools = append(tools, ToolSummary{ID: descriptor.ID, Title: title, Effect: descriptor.Risk.Effect})
 	}
 	return ToolsResponse{Tools: tools}, nil
 }

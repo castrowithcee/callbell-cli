@@ -52,8 +52,8 @@ func TestSearchAndDescribeAreLocalAndDeterministic(t *testing.T) {
 }
 
 // Search stays bounded for the request-bound agent surface, while Tools answers the complete catalog the
-// CLI publishes. Both apply the same filters to the same data, but Tools publishes only the index: the
-// tool ID and how many configured connections can run it.
+// CLI publishes. Both apply the same filters to the same data, but Tools publishes only what choosing a
+// tool needs: the ID, the title, and the effect.
 func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
 	registry := capability.NewRegistry()
 	if err := registry.RegisterProvider(config.ProviderMetadata{ID: "fake", Name: "Fake"}, nil); err != nil {
@@ -101,10 +101,10 @@ func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
 		if tool.ID != searched.Operations[i].ID {
 			t.Errorf("Tools()[%d] = %q, Search()[%d] = %q", i, tool.ID, i, searched.Operations[i].ID)
 		}
-		// This configuration has no connection at all, so an unconfigured tool stays visible with zero
-		// rather than disappearing from the index.
-		if tool.Connections != 0 {
-			t.Errorf("Tools()[%d].Connections = %d, want 0", i, tool.Connections)
+		// A descriptor without its own title falls back to the description, so an entry never reaches a
+		// reader unlabelled.
+		if tool.Title != "List objects" || tool.Effect != capability.EffectRead {
+			t.Errorf("Tools()[%d] = %+v, want the title and effect of its descriptor", i, tool)
 		}
 	}
 	filtered, err := core.Tools(SearchRequest{Query: "object3.list listing"})
@@ -113,6 +113,21 @@ func TestToolsReturnTheCompleteCatalogAndSearchStaysBounded(t *testing.T) {
 	}
 	if _, err := core.Tools(SearchRequest{Effect: "invented"}); err == nil {
 		t.Error("Tools(unknown effect) = nil error")
+	}
+}
+
+// Providers is the first step of the cascade: one line per namespace, with the size of its catalog and
+// how many configured routes can run it. A provider without a connection stays listed with zero.
+func TestProvidersCountToolsAndConnections(t *testing.T) {
+	core, _ := testCore(t, []string{"archive", "primary"}, nil, true)
+	got := core.Providers().Providers
+	want := []ProviderSummary{{Provider: "fake", Tools: 2, Connections: 2}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Providers() = %+v, want %+v", got, want)
+	}
+	unconfigured, _ := testCore(t, nil, nil, false)
+	if got := unconfigured.Providers().Providers; len(got) != 1 || got[0].Connections != 0 || got[0].Tools != 2 {
+		t.Errorf("Providers() = %+v, want the namespace listed with zero connections", got)
 	}
 }
 

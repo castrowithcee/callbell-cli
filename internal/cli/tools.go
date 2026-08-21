@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -16,21 +17,51 @@ import (
 // public contract names the exact target version instead of migrating silently with the specification.
 const toonContract = "TOON 4.1 (https://github.com/toon-format/spec/blob/v4.1.1/SPEC.md)"
 
-// newToolsCommand lists the tool catalog. A tool is one provider-qualified operation; the provider prefix
-// is its namespace, not a command tree of its own, so the number of commands never grows with the catalog.
+// newProvidersCommand lists the namespaces of the tool catalog. Discovery cascades: this command answers
+// which namespaces exist, "tools <namespace>" which tools one of them offers, and "tool <id>" one complete
+// contract. Each step stays small enough to read, however many providers are compiled in.
+func newProvidersCommand(opts *Options, registry *capability.Registry) *cobra.Command {
+	return &cobra.Command{
+		Use:   "providers",
+		Short: "List the tool namespaces this installation offers",
+		Long: "Providers lists every namespace of the tool catalog with the number of tools it offers and the\n" +
+			"number of configured connections that can run them. A provider without a connection stays\n" +
+			"listed with zero. It is answered from the local configuration alone: no provider is contacted\n" +
+			"and no secret is read.\n\n" +
+			"The tools of one namespace are one 'callbell tools <provider>' away.\n\n" +
+			"The output is " + toonContract + " with LF line endings. --output json returns the same data as\n" +
+			"JSON.",
+		Args: noArgs,
+		RunE: func(c *cobra.Command, args []string) error {
+			format, err := discoveryFormat(c, opts)
+			if err != nil {
+				return err
+			}
+			core, err := applicationCore(opts, registry, false)
+			if err != nil {
+				return err
+			}
+			return emitDocument(c, format, map[string]any{"providers": core.Providers().Providers})
+		},
+	}
+}
+
+// newToolsCommand lists the tools of one namespace. A tool is one provider-qualified operation; the
+// provider prefix is its namespace, not a command tree of its own, so the number of commands never grows
+// with the catalog.
 func newToolsCommand(opts *Options, registry *capability.Registry) *cobra.Command {
 	var query string
 	cmd := &cobra.Command{
-		Use:   "tools [namespace]",
-		Short: "List the tools this installation offers",
-		Long: "Tools is the discovery index of the local catalog: every tool with its ID and the number of\n" +
-			"configured connections that can run it. A tool without a configured connection stays listed\n" +
-			"with zero. It is answered from the local configuration alone: no provider is contacted and no\n" +
-			"secret is read.\n\n" +
-			"An optional namespace argument restricts the catalog to one provider prefix, and --query keeps\n" +
-			"only the tools whose ID, title, description, or tags contain every given term.\n\n" +
-			"Everything else about a tool, including which connections can run it and what each one is for,\n" +
-			"is one 'callbell tool <tool-id>' away.\n\n" +
+		Use:   "tools <namespace>",
+		Short: "List the tools of one namespace",
+		Long: "Tools lists every tool of one namespace with its ID, its title, and whether it reads or changes\n" +
+			"the remote system. It is answered from the local configuration alone: no provider is contacted\n" +
+			"and no secret is read.\n\n" +
+			"The namespace argument is the provider prefix of the tool IDs; 'callbell providers' lists the\n" +
+			"namespaces. --query answers the same form for a targeted search and may be used without a\n" +
+			"namespace, keeping only the tools whose ID, title, description, or tags contain every term.\n\n" +
+			"Everything else about a tool, including its schemas and which connections can run it, is one\n" +
+			"'callbell tool <tool-id>' away.\n\n" +
 			"The output is " + toonContract + " with LF line endings. --output json returns the same data as\n" +
 			"JSON.",
 		Args: atMostOneArg("tool namespace"),
@@ -38,6 +69,12 @@ func newToolsCommand(opts *Options, registry *capability.Registry) *cobra.Comman
 			format, err := discoveryFormat(c, opts)
 			if err != nil {
 				return err
+			}
+			// Without a namespace and without a query this would print the whole catalog, which is the
+			// answer the cascade exists to avoid. Naming the first step is more useful than that list.
+			if len(args) == 0 && query == "" {
+				return &UsageError{errors.New(
+					"tools needs a namespace or --query; run 'callbell providers' to list the namespaces")}
 			}
 			request := application.SearchRequest{Query: query, Connection: opts.Connection}
 			if len(args) == 1 {

@@ -89,7 +89,7 @@ func TestTwentyToolsAreDiscoverable(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
 	for _, want := range []string{
-		"tools[2]{connections,id}:", "2,twentycrm.companies.get", "2,twentycrm.companies.list",
+		"tools[2]{effect,id,title}:", "read,twentycrm.companies.get,", "read,twentycrm.companies.list,",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("tools output does not contain %q:\n%s", want, stdout)

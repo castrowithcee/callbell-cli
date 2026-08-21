@@ -93,7 +93,7 @@ func TestAgentErrorIsMachineReadable(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	opts := &Options{}
 	code := run(newRootCommand(opts, defaultRegistry()), opts,
-		[]string{"tools", "--agent", "--config", "/nonexistent/callbell.yaml"}, &stdout, &stderr)
+		[]string{"tools", "bookstack", "--agent", "--config", "/nonexistent/callbell.yaml"}, &stdout, &stderr)
 
 	if code != exitUsage {
 		t.Fatalf("exit code = %d, want %d", code, exitUsage)
