@@ -178,6 +178,9 @@ func addCredential(t *testing.T, m *Model, name string, envNames ...string) {
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	typeText(t, m, name)
+	// A credential may name its provider; these helpers leave that choice empty, which is what an entry
+	// written before the field looks like, and then every compiled role is offered.
+	press(t, m, "tab")
 	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeEnv)
 	for _, env := range envNames {
@@ -194,6 +197,7 @@ func addKeyringCredential(t *testing.T, m *Model, name string) {
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	typeText(t, m, name)
+	press(t, m, "tab")
 	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeKeyring)
 	pump(t, m, "enter")
@@ -382,7 +386,8 @@ func TestDashboardLayoutsFitTheirTerminal(t *testing.T) {
 	// The wide cards contain actual configuration rows, not only navigation labels and counts.
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	view := m.View()
-	for _, want := range []string{"wiki · bookstack", "reader · env", "personal · wiki + reader"} {
+	// The provider leads both state rows, so a card reads down its systems before their names.
+	for _, want := range []string{"bookstack · wiki", "(none) · reader · env", "personal · wiki + reader"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("dashboard does not contain state row %q:\n%s", want, view)
 		}
@@ -402,7 +407,7 @@ func TestDashboardLayoutsFitTheirTerminal(t *testing.T) {
 		m.cfg.Services[name] = config.Service{Provider: "bookstack", BaseURL: "https://" + name + ".example.invalid"}
 	}
 	view = m.View()
-	for _, want := range []string{"archive · bookstack", "+2 more", "…"} {
+	for _, want := range []string{"bookstack · archive", "+2 more", "…"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("overflowing dashboard card does not contain %q:\n%s", want, view)
 		}
@@ -894,6 +899,7 @@ func TestFieldHintsSayWhatAFieldExpects(t *testing.T) {
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	press(t, m, "tab")
+	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeEnv)
 	view := m.View()
 	words := strings.Join(strings.Fields(view), " ")
@@ -1147,6 +1153,7 @@ func TestNewKeyringCredentialContinuesWithItsSecrets(t *testing.T) {
 	press(t, m, "n")
 	typeText(t, m, "wiki-reader")
 	press(t, m, "tab")
+	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeKeyring)
 	press(t, m, "tab")
 
@@ -1332,6 +1339,7 @@ func TestAHintBelongsToTheFieldAboveIt(t *testing.T) {
 		openSectionByName(t, m, sectionCredentials)
 		press(t, m, "n")
 		press(t, m, "tab")
+		press(t, m, "tab")
 		selectChoice(t, m, config.CredentialTypeEnv)
 
 		lines := formLines(m)
@@ -1383,6 +1391,7 @@ func TestNoHintStandsTwice(t *testing.T) {
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	press(t, m, "tab")
+	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeEnv)
 	assertNoRepeatedHint(t, m, "the env credential form")
 	if got := strings.Count(m.View(), "the NAME of an environment"); got != 1 {
@@ -1421,5 +1430,55 @@ func assertNoRepeatedHint(t *testing.T, m *Model, what string) {
 	}
 	if len(blocks) == 0 {
 		t.Errorf("%s shows no hint at all:\n%s", what, m.View())
+	}
+}
+
+// A form too tall for its terminal drops the hints it can spare instead of becoming unreachable, and the
+// resize notice is never the only way out of the editor.
+func TestATallFormStaysUsableInASmallTerminal(t *testing.T) {
+	m, _, _ := newModel(t)
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 80})
+	openSectionByName(t, m, sectionCredentials)
+	press(t, m, "n")
+	full := strings.Count(m.View(), "\n")
+
+	// The same form in a terminal that cannot hold it: it is still the form, only denser.
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 16})
+	view := m.View()
+	if strings.Contains(view, "Resize terminal") {
+		t.Fatalf("the form gave up instead of tightening:\n%s", view)
+	}
+	if dense := strings.Count(view, "\n"); dense >= full {
+		t.Errorf("dense form = %d lines, want fewer than the %d of the full one", dense, full)
+	}
+	for _, want := range []string{"name", typeLabel, "enter save"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the dense form dropped %q:\n%s", want, view)
+		}
+	}
+	// The hint of the focused field survives, wrapped to the width; the hints of the others are what paid
+	// for the space.
+	if !strings.Contains(view, "a key you choose") {
+		t.Errorf("the dense form dropped the hint of the focused field:\n%s", view)
+	}
+	if strings.Contains(view, "credential store") {
+		t.Errorf("the dense form kept the hint of an unfocused field:\n%s", view)
+	}
+
+	// A terminal too small even for that shows the notice, and esc leaves it.
+	m.Update(tea.WindowSizeMsg{Width: 20, Height: 6})
+	if !strings.Contains(m.View(), "Resize terminal") {
+		t.Fatalf("a 20x6 terminal did not show the resize notice:\n%s", m.View())
+	}
+	press(t, m, "esc")
+	if m.screen != screenList {
+		t.Errorf("screen after esc = %v, want the list the form was opened from", m.screen)
+	}
+	press(t, m, "esc")
+	if m.screen != screenMenu {
+		t.Errorf("screen after the second esc = %v, want the menu", m.screen)
+	}
+	if m.quitting {
+		t.Error("leaving the notice quit the editor")
 	}
 }

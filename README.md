@@ -26,18 +26,26 @@ Discovery is a cascade, so no step grows with the size of the catalog:
 - `tool <id>` prints the full contract: version, description, tags, schemas, risk, examples, and each
   connection with its stable invoke value and the optional one-line `description` its owner maintains.
 
-`providers`, `tools` and `tool` write TOON 4.1 (https://github.com/toon-format/spec/blob/v4.1.1/SPEC.md) to stdout;
-`--output json` returns the same data as JSON. `invoke` reads its arguments as one JSON object from stdin
-and writes a JSON result. `callbell mcp` serves the same core over stdio as the three fixed broker tools
-`callbell.search`, `callbell.describe`, and `callbell.invoke`.
+`providers`, `tools` and `tool` write TOON 4.1
+(https://github.com/toon-format/spec/blob/v4.1.1/SPEC.md) to stdout; `--output json` returns the same
+data as JSON. `invoke` reads its arguments as one JSON object from stdin and writes a JSON result.
+`callbell mcp` serves the same core over stdio as the three fixed broker tools `callbell.search`,
+`callbell.describe`, and `callbell.invoke`.
 
 ## Configuration
 
 The configuration file follows the model provider -> service -> connection -> credential; `callbell tui`
-edits it and `examples/config.yaml` documents every field. A connection accepts an optional
-`description`: one line of at most 200 characters that says what the route is for. It is published by
-discovery, it is never sent to a provider, and it never selects a route: the connection name stays the
-only invoke value. Because it is published, it must never carry a secret or personal data.
+edits it and `examples/config.yaml` documents every field.
+
+A credential accepts an optional `provider`. Secret roles are provider-defined, so this is what tells a
+BookStack token pair apart from a Telegram bot token: the editor then asks for exactly those roles, and a
+role the named provider does not define is refused instead of resolving to nothing. A credential without
+it stays valid and keeps offering every compiled role.
+
+A connection accepts an optional `description`: one line of at most 200 characters that says what the
+route is for. It is published by discovery, it is never sent to a provider, and it never selects a route:
+the connection name stays the only invoke value. Because it is published, it must never carry a secret or
+personal data.
 
 ## Development
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -86,10 +87,12 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 		t.Fatalf("Twenty CRM default origin = %q", got)
 	}
 	m.section = sectionCredentials
+	// A credential that names no provider cannot know which roles are its own, so it still offers every
+	// role the registry defines: name, provider, type, and one row per role.
 	credentialFields := m.buildFields("notifier")
-	if len(credentialFields) != 9 || credentialFields[2].label != "api-key" ||
-		credentialFields[3].label != "api-token" || credentialFields[4].label != "app-password" ||
-		credentialFields[5].label != "bot-token" || credentialFields[8].label != "user-id" {
+	if len(credentialFields) != 10 || credentialFields[3].label != "api-key" ||
+		credentialFields[4].label != "api-token" || credentialFields[5].label != "app-password" ||
+		credentialFields[6].label != "bot-token" || credentialFields[9].label != "user-id" {
 		t.Fatalf("credential fields = %+v, want the Lexware, SeaTable, Nextcloud and Telegram roles from "+
 			"the registry", credentialFields)
 	}
@@ -230,4 +233,79 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	if got := m.dashboardEntry(sectionConnections, "files-partner"); !strings.Contains(got, "Shared/Callbell") {
 		t.Fatalf("Nextcloud dashboard entry = %q, want the fixed root folder", got)
 	}
+}
+
+// A credential that names its provider is asked for that provider's secret roles and no others. Naming
+// nothing keeps every role, which is what a credential written before the field looks like.
+func TestCredentialProviderDecidesItsSecretRoles(t *testing.T) {
+	reg := capability.NewRegistry()
+	for _, register := range []func(*capability.Registry) error{bookstack.Register, telegram.Register} {
+		if err := register(reg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := config.NewStore(filepath.Join(t.TempDir(), "config.yaml"), reg)
+	m, err := New(store, nil, nil, &redact.Redactor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.section = sectionCredentials
+
+	roleLabels := func(fields []field) []string {
+		var labels []string
+		for _, f := range fields {
+			if f.kind == fieldEnvName || f.kind == fieldSecret {
+				labels = append(labels, f.label)
+			}
+		}
+		return labels
+	}
+
+	tests := []struct {
+		provider string
+		want     []string
+	}{
+		{"", []string{"bot-token", "token-id", "token-secret"}},
+		{"telegram", []string{"bot-token"}},
+		{"bookstack", []string{"token-id", "token-secret"}},
+	}
+	for _, tt := range tests {
+		t.Run("provider "+tt.provider, func(t *testing.T) {
+			m.cfg.Credentials["notifier"] = config.Credential{
+				Provider: tt.provider, Type: config.CredentialTypeKeyring,
+			}
+			got := roleLabels(m.buildFields("notifier"))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("roles = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	// Switching the provider inside the form replaces the rows without leaving the form or the entry.
+	m.cfg.Credentials["notifier"] = config.Credential{
+		Provider: "bookstack", Type: config.CredentialTypeEnv,
+	}
+	m.editing = "notifier"
+	m.screen = screenForm
+	m.fields = m.buildFields("notifier")
+	m.focus = 1
+	m.fields[1].index = indexOf(t, m.fields[1].choices, "telegram")
+	m.credentialProviderChosen()
+	if got := roleLabels(m.fields); !reflect.DeepEqual(got, []string{"bot-token"}) {
+		t.Errorf("roles after the switch = %v, want only the Telegram role", got)
+	}
+	if m.focus >= len(m.fields) {
+		t.Errorf("focus = %d, want a field that still exists among %d", m.focus, len(m.fields))
+	}
+}
+
+func indexOf(t *testing.T, choices []string, want string) int {
+	t.Helper()
+	for i, choice := range choices {
+		if choice == want {
+			return i
+		}
+	}
+	t.Fatalf("%q is not among %v", want, choices)
+	return 0
 }

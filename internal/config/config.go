@@ -49,9 +49,15 @@ type Service struct {
 // That is the unchanged path for CI and headless use. Type "keyring" names nothing at all: its secrets
 // live in the system credential store, and Values must stay empty, so this file cannot hold a secret even
 // by accident.
+//
+// Provider is optional and names the system these secrets belong to. Secret roles are provider-defined, so
+// without it nothing says whether a credential holds a bot token or a wiki token pair, and an editor can
+// only offer the roles of every compiled provider at once. A credential written before this field, or by
+// hand without it, stays valid and keeps that behaviour.
 type Credential struct {
-	Type   string            `yaml:"type"`
-	Values map[string]string `yaml:"values,omitempty"`
+	Provider string            `yaml:"provider,omitempty"`
+	Type     string            `yaml:"type"`
+	Values   map[string]string `yaml:"values,omitempty"`
 }
 
 // Connection binds exactly one service to exactly one credential. Target is an optional provider-specific
@@ -262,6 +268,21 @@ func (c *Config) Validate() error {
 	for _, name := range sortedKeys(c.Credentials) {
 		cred := c.Credentials[name]
 		checkName("credentials", "credential name", name)
+		if cred.Provider != "" {
+			if _, ok := providers.ProviderMetadata(cred.Provider); !ok {
+				report("credentials.%s: unknown provider %q, known providers are %s",
+					name, cred.Provider, strings.Join(c.Providers(), ", "))
+			} else if roles := c.SecretRolesOf(cred.Provider); len(roles) > 0 {
+				// A role the named provider does not define would never be read. Naming the provider is
+				// what makes that visible here instead of at the first failing call.
+				for _, role := range sortedKeys(cred.Values) {
+					if !contains(roles, role) {
+						report("credentials.%s.values.%s: %s does not define this secret role, it uses %s",
+							name, role, cred.Provider, strings.Join(roles, ", "))
+					}
+				}
+			}
+		}
 		switch cred.Type {
 		case CredentialTypeEnv:
 			if len(cred.Values) == 0 {
@@ -380,6 +401,29 @@ func (c *Config) SecretRoles() []string {
 		}
 	}
 	return sortedKeys(roles)
+}
+
+// SecretRolesOf returns the secret roles of one provider, sorted. An unknown provider has none.
+func (c *Config) SecretRolesOf(provider string) []string {
+	metadata, ok := c.providerCatalog().ProviderMetadata(provider)
+	if !ok {
+		return nil
+	}
+	roles := make([]string, 0, len(metadata.SecretRoles))
+	for _, role := range metadata.SecretRoles {
+		roles = append(roles, role.Name)
+	}
+	sort.Strings(roles)
+	return roles
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // SecretRoleDescription returns the provider-authored help for a role.

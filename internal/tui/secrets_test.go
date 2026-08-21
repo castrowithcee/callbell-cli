@@ -556,6 +556,7 @@ func TestSlowStoreDoesNotBlockTheEditor(t *testing.T) {
 	press(t, m, "n")
 	typeText(t, m, "reader")
 	press(t, m, "tab")
+	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeKeyring)
 	press(t, m, "enter")
 	if m.fail != "" {
@@ -618,6 +619,7 @@ func TestSlowStatusQueryDoesNotBlockTheEditor(t *testing.T) {
 	openSectionByName(t, m, sectionCredentials)
 	press(t, m, "n")
 	typeText(t, m, "reader")
+	press(t, m, "tab")
 	press(t, m, "tab")
 	selectChoice(t, m, config.CredentialTypeKeyring)
 	press(t, m, "enter")

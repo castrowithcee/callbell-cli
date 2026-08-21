@@ -103,6 +103,9 @@ const (
 	envHint = "every role row holds the NAME of an environment variable that holds the secret, " +
 		"never the secret itself"
 	typeHint = "env names one environment variable per role; keyring keeps the secrets in the credential store"
+	// credentialProviderHint names the one thing this choice decides, because it is not obvious from the
+	// field itself: the rows below it are the secret roles of the provider selected here.
+	credentialProviderHint = "the system these secrets belong to; it decides which secret roles are asked for below"
 	// descriptionHint names the one consequence that sets this field apart from everything else in the
 	// editor: what is typed here is published by discovery, so it is the one place where free text can
 	// carry a secret out of this machine.
@@ -117,6 +120,19 @@ const (
 // typeLabel is the field that decides what a credential is: which variables it names, or that its secrets
 // live in a store. It is shown and chosen, never assumed.
 const typeLabel = "type"
+
+// providerLabel is the field that names the system an entry belongs to. A service always has one; a
+// credential may, and then it decides which secret roles exist.
+const providerLabel = "provider"
+
+// providerOf names the system an entry belongs to, in the leading column both lists read down. A
+// credential written without a provider says so rather than leaving a gap that shifts every column.
+func providerOf(cred config.Credential) string {
+	if cred.Provider == "" {
+		return "(none)"
+	}
+	return cred.Provider
+}
 
 // The defaults bridge the first frame until the terminal reports its real size. From then on both
 // dimensions decide which dashboard can fit.
@@ -271,6 +287,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, m.quit()
+			case "esc":
+				// Leaving is what makes this a notice instead of a trap: a screen too large for the
+				// terminal must not be the only way out of the editor.
+				return m, m.leaveScreen()
 			}
 			return m, nil
 		}
@@ -406,6 +426,23 @@ func (m *Model) newEntryBlockedFor(s section) string {
 	return ""
 }
 
+// leaveScreen steps back one screen without saving anything. It is what the resize notice offers besides
+// quitting, so a screen that does not fit is never the end of the session.
+func (m *Model) leaveScreen() tea.Cmd {
+	switch m.screen {
+	case screenMenu:
+		return nil
+	case screenList:
+		m.screen, m.cursor = screenMenu, int(m.section)
+		m.clearMessages()
+		return nil
+	default:
+		cmd := m.openSection(m.section)
+		m.status = "Cancelled"
+		return cmd
+	}
+}
+
 func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 	switch key.String() {
 	case "esc":
@@ -440,7 +477,10 @@ func (m *Model) updateForm(key tea.KeyMsg) tea.Cmd {
 		if current.label == typeLabel {
 			return m.credentialTypeChosen()
 		}
-		if current.label == "provider" {
+		if current.label == providerLabel {
+			if m.section == sectionCredentials {
+				return m.credentialProviderChosen()
+			}
 			m.providerChosen(previous)
 		}
 		if current.label == "service" {
@@ -661,6 +701,63 @@ func (m *Model) openForm(name string) tea.Cmd {
 	return nil
 }
 
+// credentialRoles are the secret roles a credential actually uses. A credential that names its provider
+// uses exactly that provider's roles; one written before this field, or by hand without it, still has to
+// be editable, so it keeps offering every compiled role.
+func (m *Model) credentialRoles(provider string) []string {
+	if provider == "" {
+		return m.cfg.SecretRoles()
+	}
+	return m.cfg.SecretRolesOf(provider)
+}
+
+// credentialProviders offers the compiled providers, plus the empty choice while this credential names
+// none. Once it names one the empty choice is gone: a credential that knows its system never goes back to
+// not knowing it, and the roles below would have nothing to narrow.
+func (m *Model) credentialProviders(current string) []string {
+	providers := m.cfg.Providers()
+	if current == "" {
+		return append([]string{""}, providers...)
+	}
+	return providers
+}
+
+// roleFields draws one row per secret role of the credential being edited.
+func (m *Model) roleFields(cred config.Credential, provider, credType string) []field {
+	roles := m.credentialRoles(provider)
+	fields := make([]field, 0, len(roles))
+	for i, role := range roles {
+		fields = append(fields, m.roleField(role, cred.Values[role], credType, i == 0))
+	}
+	return fields
+}
+
+// credentialProviderChosen replaces the role rows with those of the provider now selected. The rows are
+// what the choice is about: BookStack needs a token pair, Telegram a bot token, and a row of the other
+// provider would only ever resolve to nothing.
+func (m *Model) credentialProviderChosen() tea.Cmd {
+	cred := m.cfg.Credentials[m.editing]
+	// What was typed into a role that both providers define is kept; the credential on file only knows
+	// what was last saved.
+	values := map[string]string{}
+	for _, f := range m.fields {
+		if f.kind == fieldEnvName {
+			values[f.label] = f.value()
+		}
+	}
+	cred.Values = values
+	credType := m.credentialType()
+	m.fields = append(m.fields[:2:2], m.roleFields(cred, m.fieldValue(providerLabel), credType)...)
+	if m.focus >= len(m.fields) {
+		m.focus = len(m.fields) - 1
+	}
+	m.applyFocus()
+	if credType == config.CredentialTypeKeyring {
+		return m.refreshSources(m.editedQuery())
+	}
+	return nil
+}
+
 // credentialType is the type the credential form currently shows.
 func (m *Model) credentialType() string { return m.fieldValue(typeLabel) }
 
@@ -722,10 +819,12 @@ func (m *Model) buildFields(name string) []field {
 			// while env needs a variable exported in a shell the editor cannot reach.
 			credType = config.CredentialTypeKeyring
 		}
-		fields = append(fields, choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint))
-		for i, role := range m.cfg.SecretRoles() {
-			fields = append(fields, m.roleField(role, cred.Values[role], credType, i == 0))
-		}
+		fields = append(fields,
+			choiceField(providerLabel, m.credentialProviders(cred.Provider), cred.Provider).
+				withHint(credentialProviderHint),
+			choiceField(typeLabel, config.CredentialTypes(), credType).withHint(typeHint),
+		)
+		fields = append(fields, m.roleFields(cred, fields[1].value(), credType)...)
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
 		fields = append(fields,
@@ -803,12 +902,12 @@ func (m *Model) apply(cfg *config.Config, name string) error {
 			Options:  cfg.Services[name].Options,
 		})
 	case sectionCredentials:
-		cred := config.Credential{Type: m.credentialType()}
+		cred := config.Credential{Provider: m.fieldValue(providerLabel), Type: m.credentialType()}
 		// Only an env credential names anything here. A keyring credential carries no values at all, so
 		// this file cannot hold a secret even by accident; the core refuses one that does.
 		if cred.Type == config.CredentialTypeEnv {
 			cred.Values = map[string]string{}
-			for _, role := range m.cfg.SecretRoles() {
+			for _, role := range m.credentialRoles(cred.Provider) {
 				if v := m.fieldValue(role); v != "" {
 					cred.Values[role] = v
 				}
@@ -1032,7 +1131,20 @@ func (m *Model) View() string {
 	return view
 }
 
+// editorView renders the current screen at the density its terminal allows. A form whose hints do not fit
+// keeps the hint of the focused field and drops the rest: the field a person is on is the one they need
+// explained, and a screen that says less is worth more than one that cannot be shown at all.
 func (m *Model) editorView() string {
+	view := m.buildEditorView(false)
+	if m.screen == screenForm && !m.viewFits(view) {
+		if dense := m.buildEditorView(true); m.viewFits(dense) {
+			return dense
+		}
+	}
+	return view
+}
+
+func (m *Model) buildEditorView(dense bool) string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Callbell setup") + "\n")
 	path := "Config: " + m.store.Path()
@@ -1066,10 +1178,14 @@ func (m *Model) editorView() string {
 			// A field and its hint are one block, and the blank line stands between the blocks. Without it
 			// the hint is as close to the next field as to its own, and an indented line under a row of
 			// rows reads as the introduction to what follows rather than as the note of what precedes.
-			if i > 0 {
+			// A dense form has no blocks to separate: it carries one hint, under the field it belongs to.
+			if i > 0 && !dense {
 				b.WriteString("\n")
 			}
 			b.WriteString(line(i == m.focus, m.renderField(f, i == m.focus)) + "\n")
+			if dense && i != m.focus {
+				continue
+			}
 			if hint := m.fieldHint(f); hint != "" {
 				b.WriteString(m.indented(hint) + "\n")
 			}
@@ -1368,11 +1484,12 @@ func (m *Model) dashboardEntry(s section, name string) string {
 	switch s {
 	case sectionServices:
 		service := m.cfg.Services[name]
-		return fmt.Sprintf("%s · %s · %s", name, service.Provider, service.BaseURL)
+		return fmt.Sprintf("%s · %s · %s", service.Provider, name, service.BaseURL)
 	case sectionCredentials:
 		cred := m.cfg.Credentials[name]
-		roles := make([]string, 0, len(m.cfg.SecretRoles()))
-		for _, role := range m.cfg.SecretRoles() {
+		credentialRoles := m.credentialRoles(cred.Provider)
+		roles := make([]string, 0, len(credentialRoles))
+		for _, role := range credentialRoles {
 			source := sourceUnnamed
 			if cred.Type == config.CredentialTypeKeyring {
 				source = m.storedSource(name, role)
@@ -1381,7 +1498,7 @@ func (m *Model) dashboardEntry(s section, name string) string {
 			}
 			roles = append(roles, role+"="+source)
 		}
-		return fmt.Sprintf("%s · %s · %s", name, cred.Type, strings.Join(roles, ", "))
+		return fmt.Sprintf("%s · %s · %s · %s", providerOf(cred), name, cred.Type, strings.Join(roles, ", "))
 	case sectionConnections:
 		connection := m.cfg.Connections[name]
 		detail := fmt.Sprintf("%s · %s + %s", name, connection.Service, connection.Credential)
@@ -1611,14 +1728,17 @@ func (m *Model) testLine() string {
 func (m *Model) describe(name string) string {
 	switch m.section {
 	case sectionServices:
+		// The provider leads the line: what a service is comes before what it is called, and reading down
+		// the column shows at a glance how many services each provider has.
 		s := m.cfg.Services[name]
-		return fmt.Sprintf("%s  %s  %s", name, s.Provider, s.BaseURL)
+		return fmt.Sprintf("%s  %s  %s", s.Provider, name, s.BaseURL)
 	case sectionCredentials:
 		// The type decides what the credential is, so it is part of the line rather than something the
 		// reader has to open the form to find out.
 		cred := m.cfg.Credentials[name]
-		parts := make([]string, 0, len(m.cfg.SecretRoles()))
-		for _, role := range m.cfg.SecretRoles() {
+		credentialRoles := m.credentialRoles(cred.Provider)
+		parts := make([]string, 0, len(credentialRoles))
+		for _, role := range credentialRoles {
 			switch {
 			case cred.Type == config.CredentialTypeKeyring:
 				parts = append(parts, fmt.Sprintf("%s (%s)", role, m.storedSource(name, role)))
@@ -1627,7 +1747,8 @@ func (m *Model) describe(name string) string {
 					m.envSource(cred.Values[role])))
 			}
 		}
-		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s", name, cred.Type, strings.Join(parts, "  ")))
+		return strings.TrimSpace(fmt.Sprintf("%s  %s  %s  %s", providerOf(cred), name, cred.Type,
+			strings.Join(parts, "  ")))
 	case sectionConnections:
 		conn := m.cfg.Connections[name]
 		detail := fmt.Sprintf("%s  %s / %s", name, conn.Service, conn.Credential)

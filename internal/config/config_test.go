@@ -629,3 +629,47 @@ func TestNamesFollowTheNameRule(t *testing.T) {
 		t.Error("validateName(\"\") = nil, want an error")
 	}
 }
+
+// A credential may name the system its secrets belong to. The field is optional, an unknown provider is
+// refused, and a role the named provider does not define would never be read, so it is refused too.
+func TestCredentialProviderIsOptionalAndChecked(t *testing.T) {
+	withProvider := func(line string) string {
+		return strings.Replace(minimal, "  reader:\n", "  reader:\n"+line, 1)
+	}
+
+	t.Run("an absent provider stays valid", func(t *testing.T) {
+		cfg, err := Decode(strings.NewReader(minimal), testProviders)
+		if err != nil {
+			t.Fatalf("Decode() = %v", err)
+		}
+		if got := cfg.Credentials["reader"].Provider; got != "" {
+			t.Errorf("provider = %q, want the empty string", got)
+		}
+	})
+
+	t.Run("a named provider round-trips", func(t *testing.T) {
+		cfg, err := Decode(strings.NewReader(withProvider("    provider: bookstack\n")), testProviders)
+		if err != nil {
+			t.Fatalf("Decode() = %v", err)
+		}
+		if got := cfg.Credentials["reader"].Provider; got != "bookstack" {
+			t.Errorf("provider = %q, want bookstack", got)
+		}
+	})
+
+	t.Run("an unknown provider is refused", func(t *testing.T) {
+		_, err := Decode(strings.NewReader(withProvider("    provider: bookstck\n")), testProviders)
+		if err == nil || !strings.Contains(err.Error(), `credentials.reader: unknown provider "bookstck"`) {
+			t.Errorf("Decode() = %v, want it to name the unknown provider", err)
+		}
+	})
+
+	t.Run("a role the provider does not define is refused", func(t *testing.T) {
+		_, err := Decode(strings.NewReader(strings.Replace(withProvider("    provider: bookstack\n"),
+			"      token-id: WIKI_TOKEN_ID\n", "      bot-token: WIKI_BOT_TOKEN\n", 1)), testProviders)
+		if err == nil || !strings.Contains(err.Error(),
+			"credentials.reader.values.bot-token: bookstack does not define this secret role") {
+			t.Errorf("Decode() = %v, want it to name the role and the provider", err)
+		}
+	})
+}
