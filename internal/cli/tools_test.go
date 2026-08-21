@@ -140,12 +140,13 @@ func TestToolsListsTheConfiguredCatalogAsTOON(t *testing.T) {
 	if code != exitOK || stderr != "" {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, "tools[3]:\n") || !strings.HasSuffix(stdout, "\n") ||
+	if !strings.HasPrefix(stdout, "tools[5]:\n") || !strings.HasSuffix(stdout, "\n") ||
 		strings.Contains(stdout, "\r") {
-		t.Errorf("stdout = %q, want an LF TOON document with a three-element tools header", stdout)
+		t.Errorf("stdout = %q, want an LF TOON document with a five-element tools header", stdout)
 	}
 	for _, want := range []string{
 		"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
+		"id: lexware.invoices.list", "id: lexware.invoices.get",
 		"connections[1]: wiki", "connections[1]: alerts", "effect: create", "effect: read",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -171,9 +172,13 @@ func TestToolsFiltersByNamespaceAndQuery(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"complete catalog", nil, []string{"bookstack.pages.get", "bookstack.pages.list", "telegram.messages.send"}},
+		{"complete catalog", nil, []string{
+			"bookstack.pages.get", "bookstack.pages.list", "lexware.invoices.get",
+			"lexware.invoices.list", "telegram.messages.send",
+		}},
 		{"namespace", []string{"bookstack"}, []string{"bookstack.pages.get", "bookstack.pages.list"}},
 		{"namespace telegram", []string{"telegram"}, []string{"telegram.messages.send"}},
+		{"namespace lexware", []string{"lexware"}, []string{"lexware.invoices.get", "lexware.invoices.list"}},
 		{"query", []string{"--query", "pages"}, []string{"bookstack.pages.get", "bookstack.pages.list"}},
 		{"namespace and query", []string{"bookstack", "--query", "list"}, []string{"bookstack.pages.list"}},
 		{"query without a match", []string{"--query", "absent"}, []string{}},

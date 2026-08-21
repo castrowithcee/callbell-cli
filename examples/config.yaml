@@ -24,6 +24,11 @@ services:
     provider: telegram
     base_url: https://api.telegram.org
 
+  # Lexware accepts only its fixed production gateway, because an API key is bound to that one origin.
+  books:
+    provider: lexware
+    base_url: https://api.lexware.io
+
 # A credential says where secrets come from. BookStack needs the roles token-id and token-secret.
 credentials:
   # type: keyring keeps the secrets in the credential store of the platform, so nothing has to be
@@ -50,6 +55,10 @@ credentials:
     type: env
     values:
       bot-token: CALLBELL_TELEGRAM_NOTIFIER_BOT_TOKEN
+
+  # Lexware needs the single role api-key. Give the key the smallest permission the reads require.
+  books-accountant:
+    type: keyring
 
 # A connection is what you select with --connection. It binds one service to one credential.
 connections:
@@ -79,9 +88,14 @@ connections:
     credential: telegram-notifier
     target: "-1002222222222"
 
+  # Lexware needs no target: the organization follows from the API key.
+  accounting:
+    service: books
+    credential: books-accountant
+
 # Defaults are useful for read operations. The key is a tool namespace such as bookstack, or a complete
-# tool ID such as bookstack.pages.list when one tool needs its own route. Confirmed Telegram sends
-# deliberately ignore defaults and require the connection in the exact invoke request.
+# tool ID such as bookstack.pages.list when one tool needs its own route. Confirmed Telegram sends and
+# the Lexware reads deliberately ignore defaults and require the connection in the exact invoke request.
 defaults:
   connections:
     bookstack: wiki

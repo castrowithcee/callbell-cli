@@ -9,6 +9,7 @@ import (
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/config"
 	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
+	"github.com/castrowithcee/callbell-cli/internal/provider/lexware"
 	"github.com/castrowithcee/callbell-cli/internal/provider/telegram"
 	"github.com/castrowithcee/callbell-cli/internal/redact"
 )
@@ -19,6 +20,9 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := telegram.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := lexware.Register(reg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -37,25 +41,37 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 
 	m.section = sectionServices
 	m.fields = m.buildFields("")
-	if got := m.fields[1].choices; len(got) != 2 || got[0] != "bookstack" || got[1] != "telegram" {
-		t.Fatalf("provider choices = %v, want BookStack and Telegram registry IDs", got)
+	if got := m.fields[1].choices; len(got) != 3 || got[0] != "bookstack" || got[1] != "lexware" ||
+		got[2] != "telegram" {
+		t.Fatalf("provider choices = %v, want the BookStack, Lexware and Telegram registry IDs", got)
 	}
 	m.fields[1].index = 1
 	m.providerChosen("bookstack")
+	if got := m.fieldValue("base url"); got != "https://api.lexware.io" {
+		t.Fatalf("Lexware default base URL = %q", got)
+	}
+	m.fields[1].index = 2
+	m.providerChosen("lexware")
 	if got := m.fieldValue("base url"); got != "https://api.telegram.org" {
 		t.Fatalf("Telegram default base URL = %q", got)
 	}
 	m.section = sectionCredentials
 	credentialFields := m.buildFields("notifier")
-	if len(credentialFields) != 5 || credentialFields[2].label != "bot-token" {
-		t.Fatalf("credential fields = %+v, want Telegram bot-token from the registry", credentialFields)
+	if len(credentialFields) != 6 || credentialFields[2].label != "api-key" ||
+		credentialFields[3].label != "bot-token" {
+		t.Fatalf("credential fields = %+v, want the Lexware and Telegram roles from the registry",
+			credentialFields)
 	}
 	m.cfg.Services["telegram-main"] = config.Service{Provider: "telegram", BaseURL: "https://api.telegram.org"}
+	m.cfg.Services["lexware-main"] = config.Service{Provider: "lexware", BaseURL: "https://api.lexware.io"}
 	m.cfg.Services["wiki-main"] = config.Service{Provider: "bookstack", BaseURL: "https://wiki.example.invalid"}
 	m.cfg.Credentials["notifier"] = config.Credential{Type: config.CredentialTypeKeyring}
 	m.cfg.Credentials["reader"] = config.Credential{Type: config.CredentialTypeKeyring}
 	m.cfg.Connections["alerts"] = config.Connection{Service: "telegram-main", Credential: "notifier", Target: "-1001"}
 	m.cfg.Connections["operations"] = config.Connection{Service: "telegram-main", Credential: "notifier", Target: "-1002"}
+	m.cfg.Credentials["accounting"] = config.Credential{Type: config.CredentialTypeKeyring}
+	m.cfg.Connections["books-primary"] = config.Connection{Service: "lexware-main", Credential: "accounting"}
+	m.cfg.Connections["books-audit"] = config.Connection{Service: "lexware-main", Credential: "accounting"}
 	m.cfg.Connections["wiki-primary"] = config.Connection{Service: "wiki-main", Credential: "reader"}
 	m.cfg.Connections["wiki-audit"] = config.Connection{Service: "wiki-main", Credential: "reader"}
 	m.section = sectionConnections
@@ -65,6 +81,16 @@ func TestProviderMetadataDrivesMultipleProviderConnections(t *testing.T) {
 	}
 	if got := m.dashboardEntry(sectionConnections, "operations"); !strings.Contains(got, "-1002") {
 		t.Fatalf("dashboard entry = %q, want distinct target", got)
+	}
+	lexwareFields := m.buildFields("books-primary")
+	if strings.Contains(lexwareFields[3].hint, "required") ||
+		!strings.Contains(lexwareFields[3].hint, "not used by Lexware") {
+		t.Fatalf("Lexware target hint = %q, want an optional target", lexwareFields[3].hint)
+	}
+	for _, name := range []string{"books-primary", "books-audit"} {
+		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, name+" · lexware-main + accounting") {
+			t.Fatalf("Lexware dashboard entry = %q, want named connection %q", got, name)
+		}
 	}
 	for _, name := range []string{"wiki-primary", "wiki-audit"} {
 		if got := m.dashboardEntry(sectionConnections, name); !strings.Contains(got, name+" · wiki-main + reader") {

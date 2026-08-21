@@ -225,11 +225,12 @@ defaults:
 		}
 		// Every compiled tool is listed with the connections that can run it, so a tool without a
 		// configured route is visible as exactly that instead of silently missing.
-		if !strings.HasPrefix(stdout, "tools[3]:\n") {
+		if !strings.HasPrefix(stdout, "tools[5]:\n") {
 			t.Errorf("stdout = %q, want a TOON catalog of the compiled tools", stdout)
 		}
 		for _, want := range []string{
 			"id: bookstack.pages.get", "id: bookstack.pages.list", "id: telegram.messages.send",
+			"id: lexware.invoices.list", "id: lexware.invoices.get",
 			"connections[2]: archive,primary", "connections: []",
 		} {
 			if !strings.Contains(stdout, want) {

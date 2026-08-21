@@ -31,6 +31,11 @@ var testProviders ProviderCatalog = testProviderCatalog{
 		},
 		Target: TargetMetadata{Label: "target"},
 	},
+	"lexware": {
+		ID: "lexware", Name: "Lexware Office", DefaultBaseURL: "https://api.lexware.io",
+		SecretRoles: []SecretRole{{Name: "api-key", Description: "Lexware private API key"}},
+		Target:      TargetMetadata{Label: "target", Description: "not used by Lexware"},
+	},
 	"telegram": {
 		ID: "telegram", Name: "Telegram", DefaultBaseURL: "https://api.telegram.org",
 		SecretRoles: []SecretRole{{Name: "bot-token", Description: "Telegram bot token"}},
@@ -85,7 +90,7 @@ func TestProviderMetadataNeverTreatsTargetAsASecret(t *testing.T) {
 	if !ok || !metadata.Target.Required || metadata.Target.Label != "chat ID" {
 		t.Fatalf("Telegram metadata = %+v, %v", metadata, ok)
 	}
-	if got := New(testProviders).SecretRoles(); len(got) != 3 || got[0] != "bot-token" {
+	if got := New(testProviders).SecretRoles(); len(got) != 4 || got[0] != "api-key" {
 		t.Fatalf("secret roles = %v", got)
 	}
 }

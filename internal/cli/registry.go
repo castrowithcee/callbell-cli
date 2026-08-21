@@ -3,6 +3,7 @@ package cli
 import (
 	"github.com/castrowithcee/callbell-cli/internal/capability"
 	"github.com/castrowithcee/callbell-cli/internal/provider/bookstack"
+	"github.com/castrowithcee/callbell-cli/internal/provider/lexware"
 	"github.com/castrowithcee/callbell-cli/internal/provider/telegram"
 )
 
@@ -14,6 +15,9 @@ func defaultRegistry() *capability.Registry {
 		panic("provider registration is static and must not fail: " + err.Error())
 	}
 	if err := telegram.Register(reg); err != nil {
+		panic("provider registration is static and must not fail: " + err.Error())
+	}
+	if err := lexware.Register(reg); err != nil {
 		panic("provider registration is static and must not fail: " + err.Error())
 	}
 	return reg
