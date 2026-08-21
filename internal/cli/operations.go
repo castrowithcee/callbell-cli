@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/castrowithcee/callbell-cli/internal/application"
@@ -112,6 +113,99 @@ func readInvokeArguments(reader io.Reader) (json.RawMessage, error) {
 		return nil, &application.InvalidRequestError{Message: "stdin arguments must be a JSON object"}
 	}
 	return json.RawMessage(trimmed), nil
+}
+
+// argumentsFromFlags turns repeated --arg name=value pairs into the JSON object the contract expects. The
+// input schema decides what a value is: where it asks for a number, "limit=10" becomes one; where it asks
+// for text, the value stays exactly as it was typed. That keeps a flat call free of JSON quoting without
+// giving the CLI a second argument contract.
+func argumentsFromFlags(schema json.RawMessage, pairs []string) (json.RawMessage, error) {
+	values := map[string]any{}
+	for _, pair := range pairs {
+		name, raw, ok := strings.Cut(pair, "=")
+		if !ok || name == "" {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %q must be written as name=value", pair),
+			}
+		}
+		if _, repeated := values[name]; repeated {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %s was given more than once", name),
+			}
+		}
+		value, err := typedArgument(schema, name, raw)
+		if err != nil {
+			return nil, err
+		}
+		values[name] = value
+	}
+	return json.Marshal(values)
+}
+
+// typedArgument converts one flag value into the type its schema asks for. An unknown name stays a string:
+// the core validates the whole object against the schema afterwards and reports it there, in the same
+// words a request from stdin would get.
+func typedArgument(schema json.RawMessage, name, raw string) (any, error) {
+	switch propertyType(schema, name) {
+	case "integer":
+		if _, err := strconv.ParseInt(raw, 10, 64); err != nil {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %s must be a whole number", name),
+			}
+		}
+		return json.Number(raw), nil
+	case "number":
+		if _, err := strconv.ParseFloat(raw, 64); err != nil {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %s must be a number", name),
+			}
+		}
+		return json.Number(raw), nil
+	case "boolean":
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %s must be true or false", name),
+			}
+		}
+		return value, nil
+	case "array", "object":
+		// A structured value has no flat spelling worth inventing. It is accepted as JSON here, and the
+		// message names the way that was built for it.
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return nil, &application.InvalidRequestError{
+				Message: fmt.Sprintf("--arg %s expects JSON; pass the whole arguments object on stdin instead",
+					name),
+			}
+		}
+		return value, nil
+	default:
+		return raw, nil
+	}
+}
+
+// propertyType reads the declared type of one top-level property. Anything it cannot read means the value
+// stays a string, which is what an unconstrained argument is.
+func propertyType(schema json.RawMessage, name string) string {
+	var document struct {
+		Properties map[string]struct {
+			Type json.RawMessage `json:"type"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(schema, &document) != nil {
+		return ""
+	}
+	property, ok := document.Properties[name]
+	if !ok {
+		return ""
+	}
+	var single string
+	if json.Unmarshal(property.Type, &single) == nil {
+		return single
+	}
+	// A union such as ["string","null"] has no single answer, so the value stays a string.
+	return ""
 }
 
 func writeEnvelope(writer io.Writer, data any) error {

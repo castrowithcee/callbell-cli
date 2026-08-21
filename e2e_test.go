@@ -311,6 +311,17 @@ defaults:
 		if envelope.Data.Result["name"] != "Primary Runbook" {
 			t.Errorf("result = %+v", envelope.Data.Result)
 		}
+
+		// The same call written flat: --arg takes the type from the input schema, so the id stays a
+		// number without any JSON. Both ways must produce the same request and the same answer.
+		code, flat, stderr := c.run(t, "invoke", "bookstack.pages.get", "--connection", "primary",
+			"--arg", "id=1")
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, stderr)
+		}
+		if flat != stdout {
+			t.Errorf("--arg answer = %q, want the same as the stdin answer %q", flat, stdout)
+		}
 	})
 
 	t.Run("the provider default selects a connection", func(t *testing.T) {

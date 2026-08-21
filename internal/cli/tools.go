@@ -135,22 +135,26 @@ func newToolCommand(opts *Options, registry *capability.Registry) *cobra.Command
 }
 
 // newInvokeCommand runs one tool. The tool ID is positional and only the schema-dependent arguments come
-// from stdin, so an agent can never smuggle a route, a header, or a credential past the contract.
+// from --arg or stdin, so an agent can never smuggle a route, a header, or a credential past the contract.
 func newInvokeCommand(opts *Options, registry *capability.Registry) *cobra.Command {
 	var confirm bool
+	var flagArgs []string
 	cmd := &cobra.Command{
 		Use:   "invoke <tool-id>",
 		Short: "Invoke one tool",
 		Long: "Invoke runs the named tool through the application core, which validates the arguments against\n" +
 			"the input schema before it selects a connection or contacts a provider.\n\n" +
-			"The arguments are read from stdin as exactly one JSON object; empty input invokes the tool\n" +
-			"without arguments. --connection selects the route when the configuration leaves more than one\n" +
-			"possibility, and --confirm carries the confirmation a mutating tool requires for this request.\n\n" +
+			"The arguments come either from --arg name=value, repeated once per argument, or from stdin as\n" +
+			"exactly one JSON object; giving both is an error, and giving neither invokes the tool without\n" +
+			"arguments. --arg reads its type from the input schema, so a numeric argument needs no quoting\n" +
+			"and no JSON; an argument that is itself a list or an object belongs on stdin.\n\n" +
+			"--connection selects the route when the configuration leaves more than one possibility, and\n" +
+			"--confirm carries the confirmation a mutating tool requires for this request.\n\n" +
 			"The result is written to stdout as JSON. Diagnostics and the audit event of a confirmed\n" +
 			"mutation go to stderr.",
 		Args: exactlyOneArg("tool ID"),
 		RunE: func(c *cobra.Command, args []string) error {
-			arguments, err := readInvokeArguments(c.InOrStdin())
+			arguments, err := invokeArguments(c, registry, args[0], flagArgs)
 			if err != nil {
 				return &UsageError{err}
 			}
@@ -175,7 +179,31 @@ func newInvokeCommand(opts *Options, registry *capability.Registry) *cobra.Comma
 	}
 	cmd.Flags().BoolVar(&confirm, "confirm", false,
 		"confirm this exact request; required by a tool whose contract demands confirmation")
+	cmd.Flags().StringArrayVar(&flagArgs, "arg", nil,
+		"one tool argument as name=value, repeated per argument; typed by the input schema")
 	return cmd
+}
+
+// invokeArguments takes the arguments from whichever way the caller used. Both ways describe the same
+// object, so using them together would leave open which one applies; the CLI says so instead of merging.
+func invokeArguments(c *cobra.Command, registry *capability.Registry, id string,
+	flagArgs []string) (json.RawMessage, error) {
+	stdin, err := readInvokeArguments(c.InOrStdin())
+	if err != nil {
+		return nil, err
+	}
+	if len(flagArgs) == 0 {
+		return stdin, nil
+	}
+	if !bytes.Equal(stdin, []byte(`{}`)) {
+		return nil, &application.InvalidRequestError{
+			Message: "arguments were given both as --arg and on stdin; use one of the two",
+		}
+	}
+	// An unknown tool has no schema to type against. The values stay strings and the core reports the
+	// unknown tool, which is the error the caller actually made.
+	descriptor, _, _ := registry.Lookup(id)
+	return argumentsFromFlags(descriptor.InputSchema, flagArgs)
 }
 
 // discoveryFormat resolves the output format of the discovery commands. TOON is the default because these

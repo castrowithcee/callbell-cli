@@ -323,3 +323,73 @@ defaults:
 		t.Fatalf("handler=%d secrets=%d stderr=%q", handlerCalls, secretReads, stderr.String())
 	}
 }
+
+// --arg is the flat way to call a tool: one flag per argument, typed by the input schema, so a caller
+// never has to write JSON for a plain request.
+func TestArgumentFlagsAreTypedByTheSchema(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{
+		"text":{"type":"string"},"limit":{"type":"integer"},"ratio":{"type":"number"},
+		"draft":{"type":"boolean"},"tags":{"type":"array"},"maybe":{"type":["string","null"]}}}`)
+
+	t.Run("values take the type their schema declares", func(t *testing.T) {
+		got, err := argumentsFromFlags(schema, []string{
+			"text=Deployment finished", "limit=10", "ratio=0.5", "draft=true", `tags=["a","b"]`,
+			"maybe=7",
+		})
+		if err != nil {
+			t.Fatalf("argumentsFromFlags() = %v", err)
+		}
+		// A union type has no single answer, so "maybe" stays the text that was typed.
+		want := `{"draft":true,"limit":10,"maybe":"7","ratio":0.5,"tags":["a","b"],"text":"Deployment finished"}`
+		if string(got) != want {
+			t.Errorf("arguments = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("an unknown name stays a string for the core to reject", func(t *testing.T) {
+		got, err := argumentsFromFlags(schema, []string{"invented=1"})
+		if err != nil || string(got) != `{"invented":"1"}` {
+			t.Errorf("arguments = %s, %v", got, err)
+		}
+	})
+
+	refusals := []struct{ name, arg, want string }{
+		{"no equals sign", "text", "must be written as name=value"},
+		{"empty name", "=value", "must be written as name=value"},
+		{"a word where a whole number belongs", "limit=many", "must be a whole number"},
+		{"a fraction where a whole number belongs", "limit=1.5", "must be a whole number"},
+		{"a word where a number belongs", "ratio=some", "must be a number"},
+		{"a word where a boolean belongs", "draft=perhaps", "must be true or false"},
+		{"broken JSON for a list", "tags=a,b", "pass the whole arguments object on stdin"},
+	}
+	for _, tt := range refusals {
+		t.Run(tt.name+" is refused", func(t *testing.T) {
+			_, err := argumentsFromFlags(schema, []string{tt.arg})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("argumentsFromFlags(%q) = %v, want %q", tt.arg, err, tt.want)
+			}
+		})
+	}
+
+	t.Run("the same argument twice is refused", func(t *testing.T) {
+		_, err := argumentsFromFlags(schema, []string{"text=one", "text=two"})
+		if err == nil || !strings.Contains(err.Error(), "given more than once") {
+			t.Errorf("argumentsFromFlags(repeated) = %v", err)
+		}
+	})
+}
+
+// The two ways of passing arguments describe the same object. Using both would leave open which one
+// applies, so the CLI says so rather than merging them.
+func TestArgumentFlagsAndStdinAreExclusive(t *testing.T) {
+	t.Setenv("CALLBELL_CONFIG", "")
+	t.Setenv("CALLBELL_CLI_HOME", "")
+	cfg := writeConfig(t, validConfig)
+
+	code, stdout, stderr := runFakeCLIInput(t, `{"limit":1}`,
+		"invoke", "bookstack.pages.list", "--arg", "limit=1", "--config", cfg)
+	if code != exitUsage || stdout != "" ||
+		!strings.Contains(stderr, "arguments were given both as --arg and on stdin") {
+		t.Errorf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
